@@ -1,11 +1,12 @@
 FROM node:20-alpine
 RUN apk add --no-cache openssl
 
-EXPOSE 8080
+EXPOSE 3000
 
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV PORT=3000
 
 # Copy root and workspace package manifests so npm can resolve workspaces
 # before the full source tree is present (avoids ENOWORKSPACE errors).
