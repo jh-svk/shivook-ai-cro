@@ -1,0 +1,5 @@
+api_version = "2026-07"
+name = "CRO Variant Injector"
+handle = "cro-variant-injector"
+type = "theme_app_extension"
+uid = "321506e5-213e-4b57-0373-e0233ddfe5aa89503af3"

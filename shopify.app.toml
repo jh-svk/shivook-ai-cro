@@ -1,0 +1,40 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+#
+# PRODUCTION SETUP: replace every "https://YOUR-RAILWAY-URL" placeholder below
+# with your actual Railway service URL, then run: shopify app deploy
+
+client_id = "0448bbb332c73ebe41f69192235e1bbc"
+name = "Shivook AI CRO"
+application_url = "https://YOUR-RAILWAY-URL"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
+
+[webhooks]
+api_version = "2026-07"
+
+[webhooks.privacy_compliance]
+customer_data_request_url = "/webhooks/customers/data_request"
+customer_deletion_url     = "/webhooks/customers/redact"
+shop_deletion_url         = "/webhooks/shop/redact"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/paid" ]
+uri    = "/webhooks/orders_paid"
+
+[app_proxy]
+url     = "https://YOUR-RAILWAY-URL"
+subpath = "cro"
+prefix  = "apps"
+
+[access_scopes]
+scopes = "read_orders,read_products,write_pixels,read_customer_events"
+
+[auth]
+redirect_urls = [
+  "https://YOUR-RAILWAY-URL/auth/callback",
+  "https://YOUR-RAILWAY-URL/auth/shopify/callback",
+  "https://YOUR-RAILWAY-URL/api/auth/callback",
+]

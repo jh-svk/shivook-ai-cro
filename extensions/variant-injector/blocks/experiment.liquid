@@ -1,0 +1,35 @@
+{%- comment -%}
+  CRO Variant Injector — app embed block.
+  Loaded async/defer: zero LCP impact, never blocks rendering.
+{%- endcomment -%}
+
+{%- liquid
+  assign page_type = request.page_type
+  if page_type == 'index'
+    assign page_type = 'homepage'
+  endif
+-%}
+
+<div
+  id="cro-injector-root"
+  data-shop="{{ shop.permanent_domain | escape }}"
+  data-page-type="{{ page_type | escape }}"
+  hidden
+></div>
+
+<script>
+  (function () {
+    var s = document.createElement('script');
+    s.src = {{ 'experiment-injector.js' | asset_url | json }};
+    s.async = true;
+    s.defer = true;
+    document.head.appendChild(s);
+  })();
+</script>
+
+{% schema %}
+{
+  "name": "CRO Experiment Injector",
+  "target": "body"
+}
+{% endschema %}

@@ -1,0 +1,12 @@
+api_version = "2026-07"
+name = "CRO Event Pixel"
+handle = "cro-event-pixel"
+type = "web_pixel_extension"
+runtime_context = "lax"
+uid = "0e2306de-a812-44b8-0535-21c14652c04c027559c5"
+
+[customer_privacy]
+  analytics = true
+  preferences = false
+  marketing = false
+  sale_of_data = "disabled"

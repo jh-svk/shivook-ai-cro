@@ -1,0 +1,21 @@
+.cache
+build
+node_modules
+
+# Never bake secrets into the image
+.env
+.env.*
+
+# Extension build outputs and deps are deployed via shopify app deploy,
+# not served by the app container. Only the package.json is needed for
+# npm workspace resolution (copied explicitly in the Dockerfile).
+extensions/*/node_modules
+extensions/*/dist
+extensions/cro-pixel/src
+extensions/cro-pixel/package-lock.json
+
+# Shopify CLI dev artefacts
+.shopify
+
+# macOS
+.DS_Store
