@@ -2,4 +2,4 @@
 startCommand = "npm run docker-start"
 healthcheckPath = "/"
 healthcheckTimeout = 300
-restartPolicyType = "on-failure"
+restartPolicyType = "ON_FAILURE"
