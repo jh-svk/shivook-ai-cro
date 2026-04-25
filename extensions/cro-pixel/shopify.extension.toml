@@ -2,7 +2,12 @@ api_version = "2026-07"
 name = "CRO Event Pixel"
 handle = "cro-event-pixel"
 type = "web_pixel_extension"
-runtime_context = "lax"
+# "strict" does not require Protected Customer Data approval.
+# Upgrade to "lax" after completing PCD review at:
+#   https://shopify.dev/docs/apps/launch/protected-customer-data
+# Note: the pixel's add_to_cart and checkout_started handlers require "lax"
+# to read localStorage assignments; they will no-op in "strict" mode.
+runtime_context = "strict"
 uid = "0e2306de-a812-44b8-0535-21c14652c04c027559c5"
 
 [customer_privacy]
@@ -10,3 +15,8 @@ uid = "0e2306de-a812-44b8-0535-21c14652c04c027559c5"
   preferences = false
   marketing = false
   sale_of_data = "disabled"
+
+[settings]
+type = "object"
+
+[settings.fields]
