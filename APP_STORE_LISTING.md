@@ -3,6 +3,9 @@
 ## App name
 Shivook AI CRO
 
+## Support email
+support@shivook.com
+
 ## Tagline (under 100 chars)
 The autonomous A/B testing engine that finds, builds, and ships winning variants for you.
 
@@ -74,3 +77,6 @@ A: The experiment is concluded, the result is saved to the knowledge base (so th
 
 **Q: Is my customer data safe?**
 A: Yes. The app never collects PII. Visitor IDs are randomly generated UUIDs — not linked to Shopify customer accounts. See our Privacy Policy for full details.
+
+**Q: How do I get support?**
+A: Email us at support@shivook.com. We respond within 1 business day.

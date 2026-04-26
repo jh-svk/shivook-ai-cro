@@ -74,9 +74,7 @@ async function synthesise(shopId: string): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
-  // Build the data snapshot from what we have
-  const rawGuardrails = shop.brandGuardrails as Record<string, unknown> | null;
-  const dataSnapshot = (rawGuardrails?._latestDataSnapshot as Record<string, unknown>) ?? {};
+  const dataSnapshot = (shop.dataSnapshot as Record<string, unknown>) ?? {};
 
   const pastTests = shop.knowledgeBase
     .map(
@@ -110,9 +108,8 @@ async function runResearchSynthesis(shopId: string) {
   });
 
   try {
-    const shop = await prisma.shop.findUnique({ where: { id: shopId } });
-    const rawGuardrails = shop?.brandGuardrails as Record<string, unknown> | null;
-    const dataSnapshot = (rawGuardrails?._latestDataSnapshot ?? {}) as object;
+    const shop = await prisma.shop.findUnique({ where: { id: shopId }, select: { dataSnapshot: true } });
+    const dataSnapshot = (shop?.dataSnapshot ?? {}) as object;
 
     const reportMd = await synthesise(shopId);
 

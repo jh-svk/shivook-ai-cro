@@ -15,6 +15,7 @@ export const ACTIVATION_GATE_QUEUE = "activation-gate";
 export interface ActivationGateJobData {
   shopId: string;
   experimentId: string;
+  forceApproval?: boolean;
 }
 
 export const activationGateQueue = new Queue<ActivationGateJobData>(ACTIVATION_GATE_QUEUE, {
@@ -37,7 +38,7 @@ async function logOrchestrator(
   });
 }
 
-async function runActivationGate(shopId: string, experimentId: string) {
+async function runActivationGate(shopId: string, experimentId: string, forceApproval = false) {
   const check = await canActivateExperiment(experimentId);
   if (!check.allowed) {
     await logOrchestrator(shopId, experimentId, "ACTIVATE", "skipped", { reason: check.reason });
@@ -45,7 +46,7 @@ async function runActivationGate(shopId: string, experimentId: string) {
     return;
   }
 
-  const requireApproval = process.env.REQUIRE_HUMAN_APPROVAL !== "false";
+  const requireApproval = forceApproval || process.env.REQUIRE_HUMAN_APPROVAL !== "false";
 
   if (requireApproval) {
     await prisma.experiment.update({
@@ -71,7 +72,7 @@ export function startActivationGateWorker() {
   return new Worker<ActivationGateJobData>(
     ACTIVATION_GATE_QUEUE,
     async (job: Job<ActivationGateJobData>) => {
-      await runActivationGate(job.data.shopId, job.data.experimentId);
+      await runActivationGate(job.data.shopId, job.data.experimentId, job.data.forceApproval);
     },
     { connection }
   );

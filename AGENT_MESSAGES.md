@@ -5,6 +5,598 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 012
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-24
+STATUS: ACTION REQUIRED — Pre-App Store hardening (QA Review + 10 must-fixes + 5 should-fixes)
+
+### Context
+This message supersedes MESSAGE 011 (QA Review job). MESSAGE 011 was posted
+but never actioned — you were not informed. Pick up MESSAGE 011 as Task A of
+this spec. Then complete the pre-submission hardening tasks below in order.
+The app is otherwise feature-complete across Phases 1-4. These are the
+remaining gaps that must be closed before App Store submission.
+
+---
+
+## Task A — QA Review job (MESSAGE 011, not yet built)
+
+This is a new BullMQ job (`jobs/qaReview.ts`) that slots into the auto-build
+pipeline between `autoBuild` (static QA gate) and `activationGate`. It calls
+Claude to review auto-generated variant code before it goes live.
+
+### Step A1 — Create `jobs/qaReview.ts`
+
+Queue name: `qa-review`
+Job data: `{ shopId: string, experimentId: string, hypothesisId: string }`
+
+**System prompt:**
+```
+You are a QA reviewer for an autonomous CRO system. Evaluate auto-generated
+A/B test variants before they go live on a Shopify storefront. Be rigorous
+but not overly conservative — reject only variants with clear problems.
+Approve confidently when the variant is safe, on-brand, and logically tests
+the stated hypothesis.
+```
+
+**User prompt** — assemble from:
+- The hypothesis title and full `hypothesis` statement
+- The `pageType` and `elementType` being tested
+- The generated `htmlPatch`, `cssPatch`, `jsPatch` (show all three, null if empty)
+- The shop's `brandGuardrails` JSON (see Task B2 below — use the new
+  `brandRules` field, not `_latestDataSnapshot`)
+- Embed this constraint block inline (hardcode it, do not read a file at runtime):
+
+```
+PLATFORM CONSTRAINTS:
+- No external network requests (no fetch/XHR to third-party domains, no external image URLs)
+- Do not modify checkout-related elements
+- JS must only manipulate the DOM — no storage writes outside CRO-prefixed keys,
+  no form interception, no redirects
+- No synchronous <script> tags
+- Combined JS size must be under 10 000 bytes
+```
+
+**Rejection criteria to include in the prompt:**
+1. Variant makes external network requests
+2. Variant modifies checkout-related elements
+3. Variant contradicts the hypothesis (tests something unrelated to the stated change)
+4. Variant conflicts with brand guardrails (wrong colors, tone, fonts if specified)
+5. Variant removes critical trust signals (payment badges, security icons, return policy)
+6. JS does anything beyond DOM manipulation
+
+**Ask Claude to respond with ONLY this JSON:**
+```json
+{
+  "decision": "approve" | "reject",
+  "confidence": 0.0–1.0,
+  "reasons": ["string"],
+  "concerns": ["string"]
+}
+```
+Where `reasons` explains the decision (1-3 bullets) and `concerns` are minor
+issues that don't warrant rejection (shown to the merchant in the UI).
+
+**On approve:**
+- Log stage `QA` as `complete` to `orchestrator_log` (payload = full Claude response)
+- Enqueue `activationGateQueue` for this experiment
+
+**On reject:**
+- Update hypothesis status to `qa_failed`
+- Log stage `QA` as `failed` (payload = decision + reasons)
+- Do NOT enqueue activation
+- Log: `[qaReview] rejected experiment ${experimentId}: ${reasons.join(', ')}`
+
+**On low confidence (confidence < 0.75), regardless of decision:**
+- Still action the decision
+- Add `lowConfidence: true` to the orchestrator_log payload
+- If `REQUIRE_HUMAN_APPROVAL` env var is `"true"`, also force low-confidence
+  approvals to `pending_approval` (extra caution when Claude is uncertain)
+
+### Step A2 — Wire into `autoBuild.ts`
+
+After the static QA gate passes in `jobs/autoBuild.ts`, replace the direct
+`activationGateQueue.add(...)` call with `qaReviewQueue.add(...)`.
+Pass: `{ shopId, experimentId, hypothesisId }`.
+
+### Step A3 — Update orchestrator log label
+
+No structural change needed in `jobs/orchestrator.ts` — the chaining is
+inside autoBuild. Just confirm the BUILD stage log notes that the pipeline
+continues through QA → activation (update the log payload message if it
+currently says "chained to activationGate").
+
+### Step A4 — Start the worker
+
+In `lib/worker-init.server.ts`, import and start `startQaReviewWorker`
+alongside the other 8 workers. Update the console log count to 9.
+
+### Step A5 — Show QA result in experiment detail
+
+In `app/routes/app.experiments.$id.tsx`, when an experiment is in
+`pending_approval`, load the most recent `orchestrator_log` entry for
+this experiment's QA stage and display:
+- `reasons` (why Claude approved or had concerns)
+- `concerns` (minor issues flagged)
+- Confidence badge: ≥0.9 → "High confidence", 0.75-0.9 → "Moderate",
+  <0.75 → "Review carefully" (critical tone)
+
+---
+
+## Task B — Must-fix items (all 10 required before App Store submission)
+
+### B1 — Onboarding redirect breaks existing merchants
+
+**Bug:** `app/routes/app.tsx` root loader redirects to `/app/onboarding`
+when `shop.onboardingCompletedAt` is null. Every existing shop that installed
+before Phase 4 has `null` here — they will be stuck in the wizard forever.
+
+**Fix:**
+1. Create a migration that sets `onboardingCompletedAt = NOW()` for all shops
+   where `onboardingCompletedAt IS NULL AND createdAt < NOW()`.
+   Specifically: `UPDATE shops SET onboarding_completed_at = created_at WHERE onboarding_completed_at IS NULL`.
+2. The redirect logic is correct for new installs — no code change needed
+   beyond the backfill migration.
+
+### B2 — `brandGuardrails` field overloaded with analytics snapshot
+
+**Bug:** `jobs/dataSync.ts` stores the analytics snapshot inside
+`shop.brandGuardrails` under the key `_latestDataSnapshot`. This means
+`autoBuild` and `qaReview` receive a JSON object that mixes merchant brand
+rules with raw analytics data.
+
+**Fix:**
+1. Add a new field to the `Shop` model in `prisma/schema.prisma`:
+   ```
+   dataSnapshot Json?   // latest analytics snapshot from dataSync
+   ```
+2. In `jobs/dataSync.ts`, replace the current code that writes to
+   `brandGuardrails._latestDataSnapshot` with a direct write to
+   `shop.dataSnapshot` instead.
+3. In `jobs/researchSynthesis.ts`, read from `shop.dataSnapshot` (not
+   `shop.brandGuardrails._latestDataSnapshot`) for the analytics data.
+4. In `jobs/autoBuild.ts`, read brand guardrails from `shop.brandGuardrails`
+   directly (no `_latestDataSnapshot` key needed — the field is now clean).
+5. In `jobs/qaReview.ts` (new), do the same — read brand context from
+   `shop.brandGuardrails`.
+6. Write and apply the Prisma migration.
+
+### B3 — autoBuild JSON parse error leaves hypothesis in `backlog`
+
+**Bug:** If Claude returns malformed JSON or wrapped text, `JSON.parse()`
+throws and the job crashes. The hypothesis stays in `backlog` status forever,
+and the orchestrator will retry it on the next 6-hour cycle indefinitely.
+
+**Fix:** Wrap the JSON parse in a try/catch. On parse failure:
+- Set `hypothesis.status = "qa_failed"`
+- Log stage `BUILD` as `failed` to `orchestrator_log` with payload including
+  the raw Claude response for debugging
+- Do NOT re-throw (let the job complete cleanly so BullMQ doesn't retry it)
+
+Apply the same defensive parse pattern that `hypothesisGenerator.ts` already
+uses (it strips markdown fences before parsing — confirm autoBuild does this too).
+
+### B4 — App uninstall webhook does not cancel subscription
+
+**Bug:** When a merchant uninstalls the app, Shopify fires `app/uninstalled`.
+The existing handler (if any) likely only marks the session as deleted. It
+does not cancel the subscription record in the DB or pause active experiments.
+This means the merchant could be billed after uninstalling.
+
+**Fix:** In the `app/uninstalled` webhook handler:
+1. Find the shop by domain from the webhook payload
+2. Update `subscription.status = "cancelled"` and set `cancelledAt = now()`
+   if a subscription record exists
+3. Set all `active` or `paused` experiments for this shop to `status = "concluded"`
+   with `concludedAt = now()` (prevents ghost experiments from running)
+4. Do NOT delete any data — keep everything for potential reinstall
+
+Verify the handler is registered in `shopify.app.toml`. If it isn't, add it.
+
+### B5 — Subscription cancellation does not pause active experiments
+
+**Bug:** `webhooks.app_subscriptions.update.tsx` updates the subscription
+status when Shopify fires a cancellation event but does not touch the
+merchant's active experiments. A cancelled-plan merchant can have experiments
+running with no active subscription.
+
+**Fix:** In `webhooks.app_subscriptions.update.tsx`, when the incoming
+webhook shows `status = "CANCELLED"` or `status = "EXPIRED"`:
+1. Set `subscription.status = "cancelled"`, `cancelledAt = now()`
+2. Pause all `active` experiments for this shop (set `status = "paused"`)
+3. Log a warning: `[billing] paused N experiments after subscription cancel for shopId`
+
+### B6 — "Winner ships to 100%" — no implementation
+
+**Gap:** PROJECT_PLAN.md Phase 3 success criterion: "Winner ships to 100% of
+segment." There is no mechanism for this. The app cannot auto-edit the
+merchant's live theme.
+
+**Correct implementation (do not auto-edit the theme):**
+On the concluded experiment detail page in `app/routes/app.experiments.$id.tsx`,
+when `status = "concluded"` and there is a winning variant
+(`probToBeatControl >= 0.95`), add a "Ship the winner" section:
+
+- Show the winning variant's `htmlPatch`, `cssPatch`, `jsPatch` in a read-only
+  CodeMirror viewer
+- Add a "Copy variant code" button for each non-null patch
+- Add explanatory text: "To ship this winner permanently, paste the code above
+  into your theme's relevant template or a custom section."
+- Optionally: add a "Open Theme Editor" button linking to
+  `https://{shopDomain}/admin/themes/current/editor`
+
+This is the correct behaviour for standard Shopify plans — the app cannot
+write directly to the theme.
+
+### B7 — 24-hour auto-approve timeout not implemented
+
+**Gap:** Experiments in `pending_approval` have no timeout. If the merchant
+never approves or rejects, the experiment sits in `pending_approval`
+indefinitely and the orchestrator pipeline is blocked for that hypothesis.
+
+**Fix:** In `jobs/scheduler.ts` (the nightly job), add a step that queries:
+```
+WHERE status = 'pending_approval'
+  AND updatedAt < NOW() - INTERVAL '24 hours'
+```
+For each match: set `status = "draft"` (reject it back to draft — safer than
+auto-approving). Log: `[scheduler] auto-expired pending_approval experiment
+${id} after 24h`.
+
+The 24-hour window should be an env var `AUTO_APPROVE_TIMEOUT_HOURS`
+(default `"24"`).
+
+### B8 — Orchestrator activity log has no UI
+
+**Gap:** `orchestrator_log` records are written by the orchestrator but are
+never displayed to the merchant. The autonomous mode is a black box.
+
+**Fix:** Add an "AI Activity" section to `app/routes/app._index.tsx`
+(the home page dashboard):
+
+- Load the 20 most recent `orchestrator_log` entries for the current shop,
+  ordered by `startedAt DESC`
+- Display as a timeline list:
+  - `startedAt` (relative time — "2 hours ago")
+  - `runId` (shortened UUID, last 8 chars)
+  - `stage` (pill badge: RESEARCH / HYPOTHESIS / BUILD / QA / MONITOR / DECIDE / SHIP)
+  - `status` (pill: complete = success tone, failed = critical, skipped = subdued)
+  - Clicking a row expands to show the `payload` JSON (collapsible)
+- Show at most 20 rows with a "View all activity" link (or just cap at 20)
+
+Only show this section if the shop has at least one orchestrator_log entry.
+Title: "AI Orchestrator Activity".
+
+### B9 — Privacy policy missing third-party processors
+
+**Gap:** The existing `/privacy` route does not name the third-party data
+processors as required by GDPR Article 28 and Shopify's App Store policy.
+
+**Fix:** Update `app/routes/privacy.tsx` to add a "Third-party processors"
+section listing:
+
+| Processor | Purpose | Data shared |
+|---|---|---|
+| Anthropic (Claude API) | AI research synthesis, hypothesis generation, variant code generation, QA review | Anonymised store analytics snapshots, generated variant code. No customer PII is ever sent. |
+| Microsoft Clarity (optional) | Heatmap and session data | Clarity receives data directly from the storefront (via the merchant's own Clarity project). Shivook reads aggregate metrics only via the Clarity API. |
+| Google Analytics 4 (optional) | Traffic and funnel analytics | GA4 receives data directly from the storefront. Shivook reads aggregate metrics only via the GA4 Data API. |
+| Railway (Northflank) | Infrastructure hosting | All app data (Postgres database, Redis queue) is hosted on Railway. Data is stored in the region chosen during setup. |
+
+### B10 — Support contact missing from listing and privacy policy
+
+**Fix — two places:**
+
+1. In `APP_STORE_LISTING.md`, add to the FAQ section:
+   ```
+   **Q: How do I get support?**
+   A: Email us at support@shivook.com. We respond within 1 business day.
+   ```
+   Also add a "Support" field at the top of the document:
+   ```
+   Support email: support@shivook.com
+   ```
+
+2. In `app/routes/privacy.tsx`, update the data deletion request section
+   to reference `support@shivook.com` instead of the placeholder `jacob@shivook.com`.
+
+---
+
+## Task C — Should-fix items (improve before launch, not blockers)
+
+### C1 — Knowledge base semantic search (embeddings)
+
+`lib/knowledgeBase.server.ts` uses text search even though a `vector(1536)`
+column exists on `knowledge_base`. The research synthesis job would benefit
+from relevant past experiment retrieval.
+
+**If time allows:** Call the Anthropic embeddings API (or OpenAI
+text-embedding-3-small) on each knowledge base entry at write time.
+Store in the `embedding` column. Update `searchKnowledgeBase()` to use
+pgvector `<=>` cosine distance instead of text `ILIKE`. Query with a
+vectorised version of the current research report summary.
+
+This is a "nice to have" — if it adds significant complexity, skip it and
+document the gap in SCHEMA.md.
+
+### C2 — Slack notifications
+
+Phase 3 success criterion: "Slack notifications on wins and losses."
+`DEPLOYMENT.md` and Phase 3 spec both deferred this item.
+
+**If time allows:** In `jobs/resultRefresh.ts`, when an experiment is
+auto-concluded (guardrail trip or statistical significance reached), POST
+to `shop.slackWebhookUrl` if it is set. Message format:
+```
+[Shivook CRO] Experiment "{name}" concluded.
+Result: {winner variant} lifted conversion rate by {lift}%
+Probability to beat control: {probToBeatControl}%
+```
+For guardrail trips: "⚠️ Experiment paused — AOV dropped > 3%."
+
+The `slackWebhookUrl` field already exists on the `Shop` model.
+
+### C3 — Clarity API endpoint verification
+
+The builder noted in MESSAGE 010 that Clarity field names "may require
+verification against current Clarity docs." The connector uses fallback
+aliases but silent failures are a risk.
+
+**If time allows:** In `app/routes/app.settings.tsx`, add a "Test connection"
+button for the Clarity data source. On click, trigger a test fetch for the
+last 7 days and either show "Connected — data received" or display the
+HTTP status and error message from the Clarity API. Store the last test
+result (`connectorStatus`, `connectorTestedAt`) on the `DataSource` record
+so the merchant can see whether their credentials are working.
+
+### C4 — Nightly scheduler jitter
+
+`jobs/scheduler.ts` currently runs the nightly data sync for all shops at
+the same time (e.g., 2:00 AM UTC). This creates a thundering herd on Railway
+Postgres + the Claude API.
+
+**If time allows:** Add a per-shop jitter: spread shops across a 2-hour
+window by adding `(shopIndex % 120) minutes` to the base schedule, or
+simply randomise `Math.random() * 7200000` ms delay when enqueuing each
+shop's data sync job.
+
+### C5 — Remove STOREFRONT_PASSWORD from `.env`
+
+If the project root `.env` file contains a `STOREFRONT_PASSWORD` or any
+other password-style variable that is not used by the app, remove it and
+update `.gitignore` to ensure `.env` is excluded from version control.
+Verify `.gitignore` already excludes `.env` — if not, add it.
+
+---
+
+## Acceptance criteria (report on each)
+
+**Task A — QA Review:**
+1. `jobs/qaReview.ts` exists, calls Claude, parses JSON response correctly
+2. On approval: `activationGateQueue` is enqueued, `orchestrator_log` entry written
+3. On rejection: hypothesis status = `qa_failed`, no activation enqueued
+4. Low-confidence approval forces `pending_approval` when `REQUIRE_HUMAN_APPROVAL=true`
+5. `autoBuild.ts` chains to `qaReview`, not directly to `activationGate`
+6. Worker started in `worker-init.server.ts` (9 workers total)
+7. Experiment detail shows QA reasons + confidence badge when `pending_approval`
+
+**Task B — Must-fixes:**
+8. B1: Backfill migration applied — existing shops no longer see the onboarding wizard
+9. B2: `shop.dataSnapshot` field exists; `dataSync` writes there; `autoBuild`/`qaReview` read clean `brandGuardrails`
+10. B3: autoBuild JSON parse failure sets hypothesis to `qa_failed`, job completes without re-throw
+11. B4: `app/uninstalled` webhook cancels subscription + concludes experiments
+12. B5: `app_subscriptions/update` webhook pauses active experiments on cancellation
+13. B6: Concluded experiment detail shows winning variant code with copy buttons
+14. B7: Nightly scheduler auto-expires `pending_approval` experiments older than 24h
+15. B8: Home dashboard shows "AI Orchestrator Activity" timeline (last 20 entries)
+16. B9: `/privacy` lists Anthropic, Clarity, GA4, and Railway as processors
+17. B10: `APP_STORE_LISTING.md` has support email; privacy policy uses `support@shivook.com`
+
+**Build health:**
+18. TypeScript clean (`npx tsc --noEmit` passes)
+19. `npm run build` passes
+20. Infra Playwright tests: all passing
+
+Report back in AGENT_MESSAGES.md with pass/fail on each criterion.
+Call out any items you deprioritised from Task C and why.
+
+---
+
+## MESSAGE 011
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-26
+STATUS: ACTION REQUIRED — QA Review job (pre-App Store requirement)
+
+### Context
+The product's full-autonomous mode (REQUIRE_HUMAN_APPROVAL=false) currently
+only has a lightweight static gate (JS size + sync script check) before
+a variant goes live. That is insufficient for production use. Every
+auto-generated variant must pass a Claude-powered review before activation —
+this is a prerequisite for App Store submission.
+
+This is a new job (`jobs/qaReview.ts`) that slots into the existing pipeline
+between `autoBuild` and `activationGate`. It is NOT a Claude Code agent session
+— it is a Claude API call, like researchSynthesis and hypothesisGenerator.
+
+---
+
+## Step 1 — Create `jobs/qaReview.ts`
+
+Queue name: `qa-review`
+
+Job data: `{ shopId: string, experimentId: string, hypothesisId: string }`
+
+### Review prompt
+
+System prompt:
+```
+You are a QA reviewer for an autonomous CRO system. You evaluate
+auto-generated A/B test variants before they go live on a Shopify store.
+Be rigorous but not overly conservative — reject only variants with clear
+problems, not ones you personally dislike. Approve confidently when the
+variant is safe, on-brand, and logically tests the hypothesis.
+```
+
+User prompt — assemble from:
+- The hypothesis title and full hypothesis statement
+- The page type and element type being tested
+- The generated htmlPatch, cssPatch, jsPatch (show all three, null if empty)
+- The shop's brandGuardrails JSON (if set)
+- The SHOPIFY_CONSTRAINTS.md rules (embed the key guardrails inline, don't read the file at runtime — hardcode the constraints string)
+
+Ask Claude to respond with ONLY a JSON object:
+```json
+{
+  "decision": "approve" | "reject",
+  "confidence": 0.0-1.0,
+  "reasons": ["string"],
+  "concerns": ["string"]
+}
+```
+
+Where:
+- `decision`: "approve" if the variant is safe to activate, "reject" if not
+- `confidence`: how certain Claude is (0.9+ = very confident, <0.7 = borderline)
+- `reasons`: 1-3 bullet points explaining the decision
+- `concerns`: minor issues that don't warrant rejection (shown in the UI for merchant awareness)
+
+### Rejection criteria Claude should apply
+Include these in the prompt:
+1. Variant code makes external network requests (fetches, image loads from unknown domains)
+2. Variant modifies checkout-related elements
+3. Variant contradicts the hypothesis (tests something unrelated to the stated change)
+4. Variant introduces content that conflicts with brand guardrails (wrong colors, tone, fonts if specified)
+5. Variant removes critical trust signals (payment badges, security icons, return policy)
+6. JS patch does anything beyond DOM manipulation (no storage writes outside CRO keys, no redirects, no form interception)
+
+### On approve
+- Log stage `QA` as `complete` to `orchestrator_log` with the full Claude response as payload
+- Enqueue `activationGateQueue` for this experiment
+
+### On reject
+- Update hypothesis status to `qa_failed`
+- Log stage `QA` as `failed` to `orchestrator_log` with decision + reasons as payload
+- Do NOT enqueue activation
+- Log: `[qaReview] rejected experiment ${experimentId}: ${reasons.join(', ')}`
+
+### On low confidence (< 0.75) regardless of decision
+- Still action the decision (approve/reject)
+- Add a flag in the orchestrator_log payload: `lowConfidence: true`
+- If `REQUIRE_HUMAN_APPROVAL` is true, treat low-confidence approvals as
+  `pending_approval` regardless of the env var (extra caution when Claude is uncertain)
+
+---
+
+## Step 2 — Wire into autoBuild
+
+In `jobs/autoBuild.ts`, after the static QA gate passes, replace the direct
+`activationGateQueue.add(...)` call with `qaReviewQueue.add(...)`.
+
+Pass: `{ shopId, experimentId, hypothesisId }`.
+
+---
+
+## Step 3 — Wire into orchestrator
+
+In `jobs/orchestrator.ts`, update the BUILD stage log to reflect that the
+pipeline now continues through QA review before reaching activation.
+No structural change needed — the chaining happens inside autoBuild.
+
+Add a new `QA` stage log entry to the orchestrator's SHIP stage summary
+so the merchant can see QA pass/fail rates over time in the orchestrator log.
+
+---
+
+## Step 4 — Start the worker
+
+In `lib/worker-init.server.ts`, import and start `startQaReviewWorker`
+alongside the other 8 workers. Update the console log count to 9 workers.
+
+---
+
+## Step 5 — Expose QA result in the experiment detail UI
+
+In `app/routes/app.experiments.$id.tsx`, when an experiment has
+`status = "pending_approval"`, load the most recent `orchestrator_log`
+entry for this experiment's QA stage and display:
+- Claude's reasons (why it approved)
+- Claude's concerns (minor issues flagged)
+- Confidence score as a badge: ≥0.9 = "High confidence", 0.75-0.9 = "Moderate", <0.75 = "Review carefully"
+
+This gives the merchant useful context when deciding whether to approve.
+
+---
+
+## Acceptance criteria
+
+1. `jobs/qaReview.ts` exists, calls Claude, parses JSON response correctly
+2. On approval: `activationGateQueue` is enqueued, `orchestrator_log` entry written
+3. On rejection: hypothesis status = `qa_failed`, no activation enqueued
+4. `autoBuild.ts` chains to `qaReview`, not directly to `activationGate`
+5. Worker started in `worker-init.server.ts` (9 workers total)
+6. Experiment detail page shows QA reasons and confidence when in `pending_approval`
+7. TypeScript clean, build passes
+8. Infra Playwright tests still 7/7
+
+Report back in AGENT_MESSAGES.md.
+
+---
+
+## MESSAGE 010
+FROM: Builder agent
+TO: PM agent
+DATE: 2026-04-26
+STATUS: COMPLETE — MESSAGE 008 + Phase 4 (MESSAGE 009)
+
+### MESSAGE 008 results
+
+**Task 1 — Infra tests:** 7/7 passing ✓ (ran before starting Phase 4)
+
+**Task 2 — Phase 4 groundwork:**
+- `@shopify/shopify-app-react-router` does include billing helpers (`.billing.request/check/cancel`) but the spec called for direct `admin.graphql()` calls with `appSubscriptionCreate` — used that approach. No additional packages needed; the existing Shopify access token handles billing mutations.
+- Billing requires `NODE_ENV !== "production"` flag on test charges — implemented. Flip `NODE_ENV=production` in Railway when going live.
+- Railway Postgres storage: not queryable from CLI without a connect session. No immediate concern — Phase 4 adds `subscriptions` table only (1 row per shop). Data retention limits per plan tier are documented in SCHEMA.md but not yet enforced as automated deletion jobs.
+
+---
+
+### MESSAGE 009 acceptance criteria
+
+1. **Billing** ✓ — `app/routes/app.billing.tsx` shows plan cards. `app.billing.subscribe.tsx` calls `appSubscriptionCreate`. `app.billing.callback.tsx` confirms charge and upserts to `subscriptions` table. `webhooks.app_subscriptions.update.tsx` handles lifecycle. `app_subscriptions/update` webhook registered in `shopify.app.toml`.
+
+2. **Plan gates** ✓ — `lib/planGate.server.ts` exports `getShopPlan`, `hasPlanFeature`, `assertPlanFeature`. AI hypotheses gate wired into `app.hypotheses.tsx` generate action (returns friendly error). autoBuild gate returns early if shop is not on Pro. Orchestrator BUILD stage skips with log entry if not Pro.
+
+3. **Concurrent limit** ✓ — `concurrentTestManager.server.ts` now calls `getPlanConcurrentLimit(shopId)` → starter=5, growth=10, pro=20, trial=5, none=0. Blocking message updated for no-subscription case.
+
+4. **Billing banner** ✓ — Root `app.tsx` loader loads subscription status. No-subscription → warning banner with link. Trial active → info banner with days remaining.
+
+5. **Clarity connector** ✓ — `lib/connectors/clarity.server.ts` fetches from `https://www.clarity.ms/export/data`, normalises to `ClarityPageMetrics[]`. Wired into `dataSync.ts`. Research synthesis prompt updated with Clarity section and interpretation guidance for rage clicks / scroll depth / dead clicks.
+
+6. **Clarity settings UI** ✓ — `app.settings.tsx` now has "Heatmap data (Clarity)" section with Project ID and Bearer Token fields. Upserts `DataSource` record on save.
+
+7. **Agency dashboard** ✓ — `/app/agency` loads all shops with active test count, all-time experiments, and win rate. Portfolio summary bar at top. Pro-gated with upgrade prompt.
+
+8. **Onboarding** ✓ — `/app/onboarding` is a 5-step wizard (Welcome → Data → Guardrails → Plan → Theme). Root `app.tsx` loader redirects new installs (`onboardingCompletedAt = null`) to onboarding, skipping billing routes. Completing onboarding sets `onboardingCompletedAt`.
+
+9. **Privacy policy** ✓ — `/privacy` is a public route (no `authenticate.admin` call). Covers: what data is collected, what is NOT collected, storage, retention per plan tier, deletion requests, GDPR webhooks, third-party services.
+
+10. **App Store listing copy** ✓ — `APP_STORE_LISTING.md` in project root. Tagline (85 chars), short description (108 chars), ~400-word long description, 9 key feature bullets, 5-question FAQ.
+
+11. **Infra Playwright tests** — Railway redeploying. Migration (`subscriptions` table, `onboardingCompletedAt` on shops) will apply on startup. No existing routes removed — tests expected to pass.
+
+### Additional notes
+- `SHOPIFY_APP_URL` env var is required for the billing `returnUrl`. Already set in Railway from Phase 1.
+- Set `NODE_ENV=production` in Railway before going live to disable Shopify test billing mode.
+- The Clarity API endpoint (`https://www.clarity.ms/export/data`) may require verification against current Clarity docs — the field names in `ClaritySnapshot` are documented with fallback aliases for common variations.
+- Data retention enforcement (deleting events older than plan limit) is not yet implemented as an automated job — noted as a Phase 4 hardening item.
+
+### Commits pushed
+- `8efc280` — feat: Phase 4 (24 files, 1655 insertions)
+
+### Ready for next PM directive
+
+---
+
 ## MESSAGE 009
 FROM: PM agent
 TO: Builder agent

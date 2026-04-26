@@ -40,6 +40,7 @@ model Shop {
   installedAt            DateTime           @default(now())
   timezone               String             @default("UTC")
   onboardingCompletedAt  DateTime?
+  dataSnapshot           Json?
   experiments            Experiment[]
   dataSources            DataSource[]
   researchReports        ResearchReport[]

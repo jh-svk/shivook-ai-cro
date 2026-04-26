@@ -11,7 +11,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import { connection } from "../lib/queue";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
-import { activationGateQueue } from "./activationGate";
+import { qaReviewQueue } from "./qaReview";
 import { hasPlanFeature } from "../lib/planGate.server";
 
 export const AUTO_BUILD_QUEUE = "auto-build";
@@ -91,7 +91,7 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
 
   const hypothesis = await prisma.hypothesis.findUnique({
     where: { id: hypothesisId, shopId },
-    include: { shop: { select: { brandGuardrails: true, shopifyDomain: true } } },
+    include: { shop: { select: { brandGuardrails: true } } },
   });
   if (!hypothesis) throw new Error(`Hypothesis ${hypothesisId} not found`);
 
@@ -127,7 +127,14 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
   try {
     patches = JSON.parse(jsonStr);
   } catch {
-    throw new Error(`Claude returned non-JSON: ${jsonStr.slice(0, 200)}`);
+    await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
+    await logOrchestrator(shopId, runId, "BUILD", "failed", {
+      error: "Claude returned non-JSON",
+      raw: jsonStr.slice(0, 500),
+      hypothesisId,
+    });
+    console.error(`[autoBuild] JSON parse failed for hypothesis ${hypothesisId} — marked qa_failed`);
+    return; // complete cleanly, no retry
   }
 
   const { htmlPatch, cssPatch, jsPatch, variantDescription } = patches;
@@ -177,11 +184,16 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
   await logOrchestrator(shopId, runId, "BUILD", "complete", {
     hypothesisId,
     experimentId: experiment.id,
+    message: "static QA passed — chaining to qaReview → activationGate",
   });
 
   console.log(`[autoBuild] created experiment ${experiment.id} from hypothesis ${hypothesisId}`);
 
-  await activationGateQueue.add(`activate-${experiment.id}`, { shopId, experimentId: experiment.id });
+  await qaReviewQueue.add(`qa-${experiment.id}`, {
+    shopId,
+    experimentId: experiment.id,
+    hypothesisId,
+  });
 }
 
 export function startAutoBuildWorker() {

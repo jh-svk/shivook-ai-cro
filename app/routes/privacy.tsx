@@ -63,15 +63,43 @@ export default function PrivacyPolicy() {
       </ul>
       <p>Because we do not collect PII, customer data requests typically result in a response confirming no PII is held.</p>
 
-      <h2>Third-party services</h2>
-      <ul>
-        <li><strong>Anthropic Claude API</strong> — used for AI research synthesis and hypothesis generation. Store analytics data (aggregate metrics, no PII) is sent to the Claude API. Anthropic's privacy policy applies: <a href="https://www.anthropic.com/privacy">anthropic.com/privacy</a></li>
-        <li><strong>Google Analytics 4</strong> — optional integration. If connected, aggregate GA4 metrics are pulled via the GA4 Data API. No raw user data is stored.</li>
-        <li><strong>Microsoft Clarity</strong> — optional integration. If connected, aggregate engagement metrics are pulled from the Clarity API. No session recordings or heatmap images are stored.</li>
-      </ul>
+      <h2>Third-party processors</h2>
+      <p>We use the following third-party data processors (as defined under GDPR Article 28):</p>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead>
+          <tr>
+            <th style={{ border: "1px solid #ccc", padding: "8px", textAlign: "left" }}>Processor</th>
+            <th style={{ border: "1px solid #ccc", padding: "8px", textAlign: "left" }}>Purpose</th>
+            <th style={{ border: "1px solid #ccc", padding: "8px", textAlign: "left" }}>Data shared</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Anthropic (Claude API)</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>AI research synthesis, hypothesis generation, variant code generation, QA review</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Anonymised store analytics snapshots, generated variant code. No customer PII is ever sent.</td>
+          </tr>
+          <tr>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Microsoft Clarity (optional)</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Heatmap and session engagement data</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Clarity receives data directly from the storefront via the merchant's own Clarity project. Shivook reads aggregate metrics only (scroll depth, rage clicks, dead clicks) via the Clarity API.</td>
+          </tr>
+          <tr>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Google Analytics 4 (optional)</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Traffic and funnel analytics</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>GA4 receives data directly from the storefront. Shivook reads aggregate metrics only via the GA4 Data API. No raw user data is stored.</td>
+          </tr>
+          <tr>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Railway (infrastructure hosting)</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>Hosting all app infrastructure</td>
+            <td style={{ border: "1px solid #ccc", padding: "8px" }}>All app data (Postgres database, Redis queue) is hosted on Railway. Data is stored in the region chosen during setup. Railway's privacy policy: <a href="https://railway.app/legal/privacy">railway.app/legal/privacy</a></td>
+          </tr>
+        </tbody>
+      </table>
 
-      <h2>Contact</h2>
-      <p>For privacy questions or data deletion requests: <a href="mailto:jacob@shivook.com">jacob@shivook.com</a></p>
+      <h2>Contact &amp; Support</h2>
+      <p>For privacy questions, data deletion requests, or support: <a href="mailto:support@shivook.com">support@shivook.com</a></p>
+      <p>We respond within 1 business day.</p>
     </div>
   );
 }

@@ -43,13 +43,27 @@ async function runNightlyScheduler() {
 
   console.log(`[scheduler] nightly sync for ${shops.length} shops`);
 
+  // Spread shops across a 2-hour window to prevent thundering herd
   for (const { id: shopId } of shops) {
-    await dataSyncQueue.add(`sync-${shopId}`, { shopId });
+    const jitter = Math.round(Math.random() * 2 * ONE_HOUR_MS);
+    await dataSyncQueue.add(`sync-${shopId}`, { shopId }, { delay: jitter });
     await researchSynthesisQueue.add(
       `research-${shopId}`,
       { shopId },
-      { delay: 10 * 60 * 1000 }
+      { delay: jitter + 10 * 60 * 1000 }
     );
+  }
+
+  // Auto-expire pending_approval experiments older than AUTO_APPROVE_TIMEOUT_HOURS
+  const timeoutHours = parseInt(process.env.AUTO_APPROVE_TIMEOUT_HOURS ?? "24", 10);
+  const cutoff = new Date(Date.now() - timeoutHours * 60 * 60 * 1000);
+  const expired = await prisma.experiment.findMany({
+    where: { status: "pending_approval", updatedAt: { lt: cutoff } },
+    select: { id: true },
+  });
+  for (const exp of expired) {
+    await prisma.experiment.update({ where: { id: exp.id }, data: { status: "draft" } });
+    console.log(`[scheduler] auto-expired pending_approval experiment ${exp.id} after ${timeoutHours}h`);
   }
 }
 

@@ -76,16 +76,10 @@ async function runDataSync(shopId: string) {
     data: { lastSyncedAt: new Date() },
   });
 
-  // Store the snapshot on the shop record so the research job can use it
-  const existing = (shop.brandGuardrails as Record<string, unknown>) ?? {};
+  // Store the snapshot in the dedicated dataSnapshot field
   await prisma.shop.update({
     where: { id: shopId },
-    data: {
-      brandGuardrails: {
-        ...existing,
-        _latestDataSnapshot: snapshot as Record<string, unknown>,
-      } as object,
-    },
+    data: { dataSnapshot: snapshot as object },
   });
 
   console.log(`[dataSync] completed for shop ${shop.shopifyDomain}`);

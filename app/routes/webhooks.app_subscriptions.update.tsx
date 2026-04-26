@@ -40,6 +40,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         cancelledAt: dbStatus === "cancelled" ? new Date() : undefined,
       },
     });
+
+    // On cancellation: pause active experiments so they don't run without a subscription
+    if (dbStatus === "cancelled") {
+      const subscription = await prisma.subscription.findFirst({
+        where: { shopifyChargeId: chargeId },
+        select: { shopId: true },
+      });
+      if (subscription) {
+        const updated = await prisma.experiment.updateMany({
+          where: { shopId: subscription.shopId, status: "active" },
+          data: { status: "paused" },
+        });
+        console.log(`[billing] paused ${updated.count} experiments after subscription cancel for shopId ${subscription.shopId}`);
+      }
+    }
   } catch (err) {
     console.error("[webhooks.app_subscriptions.update] error", err);
   }

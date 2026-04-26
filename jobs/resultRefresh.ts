@@ -133,10 +133,27 @@ async function processResultRefresh(experimentId: string) {
     });
     console.log(`[resultRefresh] experiment ${experimentId} concluded: ${reason}`);
 
-    // Write to knowledge base for future hypothesis generation
     await writeKnowledgeBaseEntry(experimentId).catch((err) =>
       console.error("[resultRefresh] knowledgeBase write failed", err)
     );
+
+    // Slack notification
+    const shopRecord = await prisma.shop.findUnique({
+      where: { id: experiment.shopId },
+      select: { slackWebhookUrl: true },
+    });
+    if (shopRecord?.slackWebhookUrl) {
+      const msg = aovTripped
+        ? `⚠️ [Shivook CRO] Experiment "${experiment.name}" paused — AOV guardrail tripped (treatment AOV dropped > 3%).`
+        : `✅ [Shivook CRO] Experiment "${experiment.name}" concluded.\n` +
+          `Lift: ${((stats.relativeLift ?? 0) * 100).toFixed(1)}% | ` +
+          `P(beat control): ${((stats.probToBeatControl ?? 0) * 100).toFixed(1)}%`;
+      await fetch(shopRecord.slackWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: msg }),
+      }).catch(() => {});
+    }
   }
 }
 

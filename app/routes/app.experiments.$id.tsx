@@ -44,7 +44,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       include: { variants: true, result: true, segment: true },
     });
     if (!experiment) throw new Response("Not Found", { status: 404 });
-    return { experiment };
+
+    // Load QA log for pending_approval experiments
+    const qaLog = experiment.status === "pending_approval"
+      ? await prisma.orchestratorLog.findFirst({
+          where: { shopId: experiment.shopId, stage: "QA", runId: params.id },
+          orderBy: { startedAt: "desc" },
+        })
+      : null;
+
+    return { experiment, qaLog };
   } catch (error) {
     if (error instanceof Response) throw error;
     console.error("[experiments.$id] loader error", error);
@@ -142,7 +151,7 @@ function CodePreview({ label, code }: { label: string; code: string }) {
 }
 
 export default function ExperimentDetail() {
-  const { experiment } = useLoaderData<typeof loader>();
+  const { experiment, qaLog } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -191,6 +200,99 @@ export default function ExperimentDetail() {
           )}
         </s-stack>
       </s-section>
+
+      {/* QA Review result — shown for pending_approval experiments */}
+      {experiment.status === "pending_approval" && qaLog && (() => {
+        const payload = qaLog.payload as Record<string, unknown>;
+        const confidence = Number(payload.confidence ?? 0);
+        const confidenceTone = confidence >= 0.9 ? "success" : confidence >= 0.75 ? "warning" : "critical";
+        const confidenceLabel = confidence >= 0.9 ? "High confidence" : confidence >= 0.75 ? "Moderate confidence" : "Review carefully";
+        const reasons = (payload.reasons as string[]) ?? [];
+        const concerns = (payload.concerns as string[]) ?? [];
+        return (
+          <s-section heading="AI QA Review">
+            <s-stack direction="block" gap="base">
+              <s-stack direction="inline" gap="base">
+                <s-badge tone={confidenceTone}>{confidenceLabel} ({(confidence * 100).toFixed(0)}%)</s-badge>
+                <s-badge tone={qaLog.status === "complete" ? "success" : "critical"}>
+                  {qaLog.status === "complete" ? "Approved by AI" : "Flagged"}
+                </s-badge>
+              </s-stack>
+              {reasons.length > 0 && (
+                <s-stack direction="block" gap="small">
+                  <s-text>Reasons:</s-text>
+                  {reasons.map((r, i) => <s-text key={i}>• {r}</s-text>)}
+                </s-stack>
+              )}
+              {concerns.length > 0 && (
+                <s-stack direction="block" gap="small">
+                  <s-text>Minor concerns (did not block approval):</s-text>
+                  {concerns.map((c, i) => <s-text key={i}>• {c}</s-text>)}
+                </s-stack>
+              )}
+            </s-stack>
+          </s-section>
+        );
+      })()}
+
+      {/* Ship the winner — shown when experiment concluded with a winner */}
+      {experiment.status === "concluded" &&
+        (experiment.result?.probToBeatControl ?? 0) >= 0.95 && (() => {
+          const treatment = experiment.variants.find((v) => v.type === "treatment");
+          if (!treatment) return null;
+          return (
+            <s-section heading="Ship the winner">
+              <s-stack direction="block" gap="base">
+                <s-paragraph>
+                  Treatment won with {((experiment.result!.probToBeatControl ?? 0) * 100).toFixed(1)}% probability to beat control.
+                  To make this permanent, paste the code below into your theme.
+                </s-paragraph>
+                {treatment.htmlPatch && (
+                  <s-stack direction="block" gap="small">
+                    <s-stack direction="inline" gap="base">
+                      <s-text>HTML patch</s-text>
+                      <button type="button" onClick={() => navigator.clipboard.writeText(treatment.htmlPatch!)} style={{ cursor: "pointer" }}>
+                        Copy
+                      </button>
+                    </s-stack>
+                    <pre style={{ background: "#f6f6f7", padding: "8px 12px", borderRadius: 8, overflowX: "auto", fontSize: 12, fontFamily: "monospace" }}>
+                      {treatment.htmlPatch}
+                    </pre>
+                  </s-stack>
+                )}
+                {treatment.cssPatch && (
+                  <s-stack direction="block" gap="small">
+                    <s-stack direction="inline" gap="base">
+                      <s-text>CSS patch</s-text>
+                      <button type="button" onClick={() => navigator.clipboard.writeText(treatment.cssPatch!)} style={{ cursor: "pointer" }}>
+                        Copy
+                      </button>
+                    </s-stack>
+                    <pre style={{ background: "#f6f6f7", padding: "8px 12px", borderRadius: 8, overflowX: "auto", fontSize: 12, fontFamily: "monospace" }}>
+                      {treatment.cssPatch}
+                    </pre>
+                  </s-stack>
+                )}
+                {treatment.jsPatch && (
+                  <s-stack direction="block" gap="small">
+                    <s-stack direction="inline" gap="base">
+                      <s-text>JS patch</s-text>
+                      <button type="button" onClick={() => navigator.clipboard.writeText(treatment.jsPatch!)} style={{ cursor: "pointer" }}>
+                        Copy
+                      </button>
+                    </s-stack>
+                    <pre style={{ background: "#f6f6f7", padding: "8px 12px", borderRadius: 8, overflowX: "auto", fontSize: 12, fontFamily: "monospace" }}>
+                      {treatment.jsPatch}
+                    </pre>
+                  </s-stack>
+                )}
+                <s-link href={`https://${experiment.shopId}/admin/themes/current/editor`} target="_blank">
+                  Open Theme Editor →
+                </s-link>
+              </s-stack>
+            </s-section>
+          );
+        })()}
 
       <s-section heading="Results">
         {result ? (

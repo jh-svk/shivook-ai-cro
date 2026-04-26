@@ -19,12 +19,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
 
   try {
-    const experiments = await prisma.experiment.findMany({
-      where: { shopId: shop.id },
-      orderBy: { createdAt: "desc" },
-      include: { result: true },
-    });
-    return { experiments };
+    const [experiments, orchestratorLogs] = await Promise.all([
+      prisma.experiment.findMany({
+        where: { shopId: shop.id },
+        orderBy: { createdAt: "desc" },
+        include: { result: true },
+      }),
+      prisma.orchestratorLog.findMany({
+        where: { shopId: shop.id },
+        orderBy: { startedAt: "desc" },
+        take: 20,
+      }),
+    ]);
+    return { experiments, orchestratorLogs };
   } catch (error) {
     console.error("[app._index] failed to load experiments", error);
     return {
@@ -33,12 +40,30 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           typeof prisma.experiment.findMany<{ include: { result: true } }>
         >
       >,
+      orchestratorLogs: [] as Awaited<ReturnType<typeof prisma.orchestratorLog.findMany>>,
     };
   }
 };
 
+const STAGE_TONE: Record<string, "info" | "success" | "warning" | "critical" | "neutral"> = {
+  complete: "success",
+  failed: "critical",
+  skipped: "neutral",
+  running: "info",
+};
+
+function relativeTime(date: string): string {
+  const diff = Date.now() - new Date(date).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
 export default function ExperimentsIndex() {
-  const { experiments } = useLoaderData<typeof loader>();
+  const { experiments, orchestratorLogs } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="A/B Experiments">
@@ -122,6 +147,27 @@ export default function ExperimentsIndex() {
               ))}
             </s-table-body>
           </s-table>
+        </s-section>
+      )}
+
+      {orchestratorLogs.length > 0 && (
+        <s-section heading="AI Orchestrator Activity">
+          <s-stack direction="block" gap="base">
+            {orchestratorLogs.map((log) => (
+              <details key={log.id} style={{ borderBottom: "1px solid #e1e3e5", paddingBottom: 8 }}>
+                <summary style={{ cursor: "pointer", listStyle: "none", display: "flex", alignItems: "center", gap: 8 }}>
+                  <s-badge tone={STAGE_TONE[log.status] ?? "info"}>{log.stage}</s-badge>
+                  <s-badge>{log.status}</s-badge>
+                  <s-text>
+                    {relativeTime(String(log.startedAt))} — run {String(log.runId).slice(-8)}
+                  </s-text>
+                </summary>
+                <pre style={{ background: "#f6f6f7", padding: "8px 12px", borderRadius: 4, fontSize: 11, marginTop: 4, overflowX: "auto" }}>
+                  {JSON.stringify(log.payload, null, 2)}
+                </pre>
+              </details>
+            ))}
+          </s-stack>
         </s-section>
       )}
     </s-page>
