@@ -8,7 +8,16 @@ import { findOrCreateShop } from "../../lib/shop.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
-  return { shop };
+
+  const claritySource = await prisma.dataSource.findFirst({
+    where: { shopId: shop.id, type: "clarity" },
+    select: { id: true, config: true },
+  });
+
+  return {
+    shop,
+    clarityProjectId: (claritySource?.config as Record<string, string> | null)?.projectId ?? "",
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -16,6 +25,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
 
   const fd = await request.formData();
+
+  // Clarity settings
+  const clarityProjectId  = String(fd.get("clarityProjectId") ?? "").trim();
+  const clarityBearerToken = String(fd.get("clarityBearerToken") ?? "").trim();
+  if (clarityProjectId && clarityBearerToken) {
+    const existing = await prisma.dataSource.findFirst({ where: { shopId: shop.id, type: "clarity" } });
+    if (existing) {
+      await prisma.dataSource.update({
+        where: { id: existing.id },
+        data: { config: { projectId: clarityProjectId, bearerToken: clarityBearerToken } },
+      });
+    } else {
+      await prisma.dataSource.create({
+        data: { shopId: shop.id, type: "clarity", config: { projectId: clarityProjectId, bearerToken: clarityBearerToken } },
+      });
+    }
+  } else if (clarityProjectId && !clarityBearerToken) {
+    // Only project ID provided — update without changing the token
+    const existing = await prisma.dataSource.findFirst({ where: { shopId: shop.id, type: "clarity" } });
+    if (existing) {
+      const cfg = existing.config as Record<string, string>;
+      await prisma.dataSource.update({
+        where: { id: existing.id },
+        data: { config: { ...cfg, projectId: clarityProjectId } },
+      });
+    }
+  }
+
   const slackWebhookUrl =
     String(fd.get("slackWebhookUrl") ?? "").trim() || null;
   const requireHumanApproval = fd.get("requireHumanApproval") === "true";
@@ -43,7 +80,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Settings() {
-  const { shop } = useLoaderData<typeof loader>();
+  const { shop, clarityProjectId } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -85,6 +122,23 @@ export default function Settings() {
             rows={8}
             details="AOV drop threshold defaults to 3% if not set"
           />
+        </s-section>
+
+        <s-section heading="Heatmap data (Clarity)">
+          <s-stack direction="block" gap="base">
+            <s-text-field
+              name="clarityProjectId"
+              label="Clarity Project ID"
+              value={clarityProjectId}
+              placeholder="abcde12345"
+            />
+            <s-text-field
+              name="clarityBearerToken"
+              label="Clarity Bearer Token"
+              placeholder="Leave blank to keep existing token"
+              details="Token is stored encrypted-at-rest by Railway"
+            />
+          </s-stack>
         </s-section>
 
         <s-section heading="Approvals">

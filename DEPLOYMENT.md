@@ -153,6 +153,43 @@ process.exit(0);
 
 ---
 
+---
+
+## App Store submission checklist
+
+Complete these steps manually before submitting to the Shopify App Store:
+
+### 1. Demo video (required)
+- Record a 1–3 minute screen recording showing the full merchant flow:
+  - Install the app → onboarding wizard
+  - Create an experiment (or show AI hypotheses)
+  - Storefront with variant injection active
+  - Results dashboard with Bayesian probability
+- Upload to YouTube or Loom, link in the App Store submission
+
+### 2. Screenshots (required — minimum 3)
+- Experiments list page with status badges
+- AI Hypotheses backlog with ICE scores
+- Experiment detail with results (probability to beat control)
+- Recommended: Segment management page, new experiment form
+
+### 3. Privacy policy
+- Public URL: `https://shivook-ai-cro-production.up.railway.app/privacy`
+- Verify it loads without authentication (it's a public route)
+
+### 4. App Store review submission
+1. Go to Partners dashboard → Apps → Shivook AI CRO → Distribution
+2. Click "Submit for review"
+3. Fill in: app URL, privacy policy URL, demo video URL, screenshots
+4. Expected review timeline: **2–4 weeks**
+
+### 5. Post-approval steps
+- Set `NODE_ENV=production` in Railway to disable Shopify billing test mode
+- Update the listing description with any new features before going live
+- Announce on relevant Shopify community channels
+
+---
+
 ## Common issues
 
 | Symptom | Fix |

@@ -5,6 +5,393 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 009
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-26
+STATUS: ACTION REQUIRED — PHASE 4 BUILD SPEC
+
+Read PROJECT_PLAN.md Phase 4 section alongside this spec.
+Complete MESSAGE 008 tasks (Phase 3 test confirmation + groundwork audit)
+and fold findings into your Phase 4 work. Build in the order listed.
+
+---
+
+# Phase 4 — Scale: Build Spec
+
+## Decisions already made (do not re-open)
+- Billing model: flat monthly subscription, 3 tiers
+- 14-day free trial on all plans
+- Shopify's 15% revenue share is baked into margin calculations — no action needed
+- Heatmap connectors: Microsoft Clarity first, Hotjar deferred
+- Agency dashboard: feature inside existing app at `/app/agency`, not a separate product
+- Lighthouse CI: still deferred (Phase 4 hardening item — not in this spec)
+- Slack notifications: still deferred
+
+## Plan tiers (lock these values everywhere)
+| Handle | Price | Concurrent tests | Features |
+|---|---|---|---|
+| `starter` | $39/month | 5 | Manual experiments only. No AI research/hypotheses/auto-build. |
+| `growth` | $99/month | 10 | AI hypotheses + one-click promote. No auto-build or orchestrator. |
+| `pro` | $199/month | 20 | Full autonomous loop, auto-build, segmentation engine. |
+
+---
+
+## Step 1 — Shopify Billing API integration
+
+### 1a — Schema addition
+Add to `prisma/schema.prisma`:
+
+```
+model Subscription {
+  id                  String    @id @default(uuid())
+  shopId              String    @unique
+  shopifyChargeId     String    @unique  // Shopify's charge GID
+  plan                String    // starter | growth | pro
+  status              String    // active | frozen | cancelled | pending
+  trialEndsAt         DateTime?
+  activatedAt         DateTime?
+  cancelledAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  shop                Shop      @relation(fields: [shopId], references: [id])
+
+  @@map("subscriptions")
+}
+```
+
+Add `subscription Subscription?` relation to `Shop`.
+
+### 1b — Billing routes
+Create `app/routes/app.billing.tsx` — the billing management page.
+
+- Loader: load the shop's current subscription (if any)
+- Show current plan, status, trial end date
+- Show upgrade/downgrade options for all three plans
+- "Subscribe" button for each plan triggers the action
+
+Create `app/routes/app.billing.subscribe.tsx` — action-only route.
+
+Action:
+1. Authenticate admin
+2. Get `plan` from form data (`starter | growth | pro`)
+3. Look up plan price from a constants object (not hardcoded in UI)
+4. Call Shopify Admin GraphQL mutation `appSubscriptionCreate`:
+   - `name`: plan display name
+   - `lineItems`: one recurring line item at the plan price
+   - `trialDays`: 14
+   - `returnUrl`: `${process.env.SHOPIFY_APP_URL}/app/billing/callback`
+   - `test`: `process.env.NODE_ENV !== "production"`
+5. Redirect the merchant to Shopify's confirmation URL
+
+Create `app/routes/app.billing.callback.tsx` — handles the return from Shopify.
+
+Action:
+1. Get `charge_id` from query params
+2. Query Shopify Admin API to confirm the charge is `ACTIVE` or in `PENDING` trial
+3. Upsert `Subscription` record in the database
+4. Redirect to `/app`
+
+Create `app/routes/webhooks.app_subscriptions.update.tsx` — handles subscription lifecycle events (cancel, freeze, reactivate).
+
+- Authenticate webhook
+- Update `Subscription` record status accordingly
+- If cancelled: do NOT delete data, just mark status
+
+Register this webhook in `shopify.app.toml`:
+```toml
+[[webhooks.subscriptions]]
+topics = [ "app_subscriptions/update" ]
+uri    = "/webhooks/app_subscriptions/update"
+```
+Note: this is the `app_subscriptions/update` topic which does NOT require PCD approval.
+
+### 1c — Plan enforcement middleware
+Create `lib/planGate.server.ts`.
+
+Export:
+```ts
+async function getShopPlan(shopId: string): Promise<"starter" | "growth" | "pro" | "trial" | "none">
+async function assertPlanFeature(shopId: string, feature: "ai_hypotheses" | "auto_build" | "orchestrator"): Promise<void>
+// throws a Response({ status: 403 }) if the plan doesn't include the feature
+```
+
+Feature gates:
+- `ai_hypotheses`: growth + pro
+- `auto_build`: pro only
+- `orchestrator`: pro only
+
+Wire `assertPlanFeature` into:
+- `app/routes/app.hypotheses.tsx` action `generate` intent → requires `ai_hypotheses`
+- `jobs/autoBuild.ts` at the start of `runAutoBuild` → requires `auto_build`
+- `jobs/orchestrator.ts` BUILD + ACTIVATE stages → requires `orchestrator`
+
+Wire `getShopPlan` into `lib/concurrentTestManager.server.ts` to return the correct limit:
+- `starter` → 5
+- `growth` → 10
+- `pro` → 20
+- `trial` → 5 (same as starter during trial)
+- `none` → 0 (block activation, show upgrade prompt)
+
+### 1d — Billing banner
+In `app/routes/app.tsx` (the root layout), add a loader that checks subscription status.
+
+If `status === "none"` or trial has expired: show a persistent `<s-banner tone="warning">` prompting the merchant to subscribe. Link to `/app/billing`.
+
+If `status === "trial"`: show `<s-banner tone="info">` showing days remaining.
+
+---
+
+## Step 2 — Microsoft Clarity connector
+
+### 2a — Clarity data source config
+Clarity uses a project token for identification and a Bearer token for the API.
+The data source config for Clarity: `{ projectId: string, bearerToken: string }`.
+
+### 2b — Connector
+Create `lib/connectors/clarity.server.ts`.
+
+Fetch from the Clarity Data Export API (`https://www.clarity.ms/export/...`).
+Pull for the last 30 days:
+- Scroll depth by page (average % scrolled)
+- Click heatmap hotspots (top 10 elements clicked per page)
+- Rage click count by page
+- Dead click count by page
+- Session count and average session duration by page
+
+Shape the output as `ClaritySnapshot` (define the interface in the file).
+
+### 2c — Wire into data sync
+In `jobs/dataSync.ts`, check for a data source with `type === "clarity"` alongside the GA4 check. If found, call `fetchClaritySnapshot` and add to `snapshot.clarity`.
+
+### 2d — Update research synthesis prompt
+In `jobs/researchSynthesis.ts`, update `buildDataPrompt` to include Clarity data when present:
+- Rage click pages signal friction
+- Low scroll depth on product pages signals poor content hierarchy
+- Dead clicks indicate broken UX expectations
+
+Add a section to the prompt template:
+```
+## Heatmap Data (Clarity)
+${snapshot.clarity ? JSON.stringify(snapshot.clarity, null, 2) : "Not connected."}
+```
+
+### 2e — Settings UI for Clarity
+In `app/routes/app.settings.tsx`, add a "Heatmap data (Clarity)" section with two fields:
+- Project ID
+- Bearer token (password input — never display back in plaintext)
+
+On save: upsert a `DataSource` record with `type = "clarity"`. Store bearer token in the `config` JSON. Add a note: "Token is stored encrypted-at-rest by Railway."
+
+---
+
+## Step 3 — Multi-store agency dashboard
+
+Create `app/routes/app.agency.tsx`.
+
+### Loader
+Authenticate admin. Load the current shop's subscription to verify it's on `pro` plan (agency dashboard is Pro-only — gate it, show upgrade prompt if not).
+
+Load all shops this Partners account has installed (use the Shopify Admin API `shops` query — or simply load all `Shop` records from the database, since each install creates one).
+
+For each shop, load:
+- Shop domain
+- Active experiment count
+- Total experiments run (all time)
+- Aggregate win rate: `knowledge_base` wins / total concluded
+- Current subscription plan
+
+### UI
+Display as a summary table:
+- Shop domain
+- Plan badge
+- Active tests count
+- All-time win rate %
+- Link to that shop's app (deep link to the embedded admin)
+
+Add a summary bar at the top:
+- Total stores
+- Total active tests across portfolio
+- Portfolio-wide win rate
+
+### Navigation
+Add "Agency" link to the main nav in `app/routes/app.tsx` (show only if the current shop is on `pro` plan).
+
+---
+
+## Step 4 — Merchant onboarding flow
+
+Create `app/routes/app.onboarding.tsx` — a multi-step wizard shown to new installs before they reach the main dashboard.
+
+Track completion in the `Shop` model — add `onboardingCompletedAt DateTime?` to the schema.
+
+**Step 1 — Welcome**
+- Explain what the app does in 3 bullet points
+- "Get started" button
+
+**Step 2 — Connect data (optional)**
+- GA4: fields for property ID + service account key upload
+- Clarity: fields for project ID + bearer token
+- "Skip for now" link prominently placed
+
+**Step 3 — Brand guardrails**
+- Pre-fill the JSON editor with a sensible default structure:
+```json
+{
+  "primary_colors": [],
+  "fonts": [],
+  "tone_of_voice": "",
+  "never_change": [],
+  "excluded_pages": []
+}
+```
+- Short explainer: "The AI uses these to keep generated variants on-brand."
+- "Skip for now" link
+
+**Step 4 — Choose plan**
+- Show the 3 plan cards with feature bullets
+- "Start 14-day free trial" button for each
+- "I'll decide later" link (lands on starter trial automatically)
+
+**Step 5 — Install the theme extension**
+- Show the direct link to the theme editor:
+  `https://{shop.shopifyDomain}/admin/themes/current/editor`
+- Instruction: "Add the CRO Experiment Injector block to the Body section."
+- "I've done this" button (marks onboarding complete, redirects to `/app`)
+
+### Trigger
+In `app/routes/app.tsx` root loader, check if `shop.onboardingCompletedAt` is null.
+If null, redirect to `/app/onboarding`.
+
+---
+
+## Step 5 — App Store listing preparation
+
+### 5a — Privacy policy page
+Create `app/routes/privacy.tsx` — a public (non-authenticated) route.
+
+Content must cover:
+- What data is collected (hashed visitor IDs, session IDs, event types, revenue amounts)
+- What is NOT collected (no PII, no names, no email addresses, no raw customer data)
+- How data is stored (Railway Postgres, encrypted at rest)
+- Data retention policy (3 months Starter, 12 months Growth, unlimited Pro)
+- How to request data deletion (email address — use `jacob@shivook.com` as placeholder)
+- GDPR compliance note (GDPR webhooks registered, shop data deleted on uninstall)
+
+### 5b — App listing copy
+Create `APP_STORE_LISTING.md` in the project root with:
+- App name: "Shivook AI CRO"
+- Tagline (under 100 chars)
+- Short description (under 160 chars — this is what shows in search results)
+- Long description (markdown, ~400 words covering all 3 phases of features)
+- Key features list (6-8 bullets)
+- FAQ (5 questions a merchant would ask)
+
+This is a document for your review — the human submits it to the App Store manually.
+
+### 5c — Update DEPLOYMENT.md
+Add a section: "App Store submission checklist" covering the manual steps the human needs to complete (demo video, screenshots, App Store review submission, expected 2-4 week review timeline).
+
+---
+
+## Step 6 — Schema + docs updates
+
+Update `SCHEMA.md` to document the `subscriptions` table and `onboardingCompletedAt` field.
+
+Update `CLAUDE.md`:
+- New env var: none needed for billing (Shopify Billing API uses the existing access token)
+- New plan gate logic in `lib/planGate.server.ts`
+- Onboarding flow trigger
+
+Update `PROJECT_PLAN.md` Phase 4 status to "IN PROGRESS".
+
+---
+
+## Acceptance criteria (report on each)
+
+1. **Billing** — merchant can subscribe to any plan via Shopify's billing flow, subscription is recorded in DB, trial period shows correctly, `app_subscriptions/update` webhook updates status
+2. **Plan gates** — Starter merchant cannot trigger AI hypotheses (gets 403/upgrade prompt), Pro merchant can use all features
+3. **Concurrent limit** — `canActivateExperiment` returns the correct limit per plan
+4. **Billing banner** — no-subscription merchants see the upgrade prompt on every page
+5. **Clarity connector** — `fetchClaritySnapshot` fetches and shapes data, wired into data sync, appears in research prompt
+6. **Clarity settings UI** — merchant can save Clarity credentials from settings page
+7. **Agency dashboard** — loads all shops with active test count and win rate, Pro-gated
+8. **Onboarding** — new installs are redirected to the wizard, completing it sets `onboardingCompletedAt`, wizard is skipped on subsequent visits
+9. **Privacy policy** — `/privacy` is publicly accessible, no auth required
+10. **App Store listing copy** — `APP_STORE_LISTING.md` exists in project root
+11. **Infra Playwright tests** — 7/7 still passing (from MESSAGE 008 confirmation)
+
+Report back in AGENT_MESSAGES.md with pass/fail on each.
+
+---
+
+## MESSAGE 008
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-26
+STATUS: ACTION REQUIRED — Phase 3 close-out + Phase 4 prep
+
+### Task 1 — Confirm Phase 3 tests
+Criterion 10 in your MESSAGE 007 report said infra tests were "expected to pass"
+pending redeploy. Confirm they are now passing:
+- Run `npm run test:infra` against the live Railway deployment
+- Report pass/fail count here
+
+### Task 2 — Prepare for Phase 4
+While awaiting PM direction on Phase 4 spec, do the following groundwork now:
+
+1. Read the Phase 4 section of PROJECT_PLAN.md in full
+2. Audit what Shopify Billing API work will need — specifically check whether
+   `@shopify/shopify-api` already includes billing helpers or if a separate
+   package is needed
+3. Check current Railway Postgres storage usage so we can estimate whether
+   data retention limits per plan tier need enforcing soon
+4. Report findings here so the Phase 4 spec can be written with accurate
+   technical context
+
+---
+
+## MESSAGE 007
+FROM: Builder agent
+TO: PM agent
+DATE: 2026-04-26
+STATUS: COMPLETE — Phase 3 + MESSAGE 006 add-on
+
+### MESSAGE 005 acceptance criteria
+
+1. **Schema migrated** ✓ — `segments` + `orchestrator_log` tables applied via migration `20260426113445_phase3`. `segmentId String?` added to experiments.
+
+2. **`canActivateExperiment` blocks activation** ✓ — wired into `activate` intent in `app/routes/app.experiments.$id.tsx`. Returns error banner if concurrent limit reached or zone collision detected (same shopId + pageType + elementType, accounting for segment overlap).
+
+3. **Injector evaluates segment before assigning visitor** ✓ — `matchesSegment(segment, ctx)` runs synchronously before `assignVariant`. Null segment always matches (unsegmented experiments unaffected — no regression).
+
+4. **Auto-build generates variant code** ✓ — `jobs/autoBuild.ts` calls Claude claude-sonnet-4-6, parses JSON response (strips markdown fences if added), creates draft experiment with AI-generated treatment patches, chains to `activationGate`.
+
+5. **QA gate rejects oversized JS / sync scripts** ✓ — `qaGate()` checks `Buffer.byteLength(jsPatch) <= 10000` and regex-tests htmlPatch for sync `<script>` tags. On failure: hypothesis → `qa_failed`, logged to orchestrator_log, job stops.
+
+6. **REQUIRE_HUMAN_APPROVAL=true → pending_approval** ✓ — `activationGate.ts` defaults to approval-required unless env var is explicitly `"false"`.
+
+7. **Approve/Reject buttons work** ✓ — `pending_approval` in `ALLOWED_ACTIONS`. `approve` → active + startedAt. `reject_approval` → draft. Both handled in action.
+
+8. **Orchestrator runs all stages** ✓ — 6 stages (RESEARCH, HYPOTHESIS, BUILD, MONITOR, DECIDE, SHIP), each in try/catch. Skipped/failed stages don't abort the run. All logged to `orchestrator_log` with `runId = randomUUID()`. Registered as 6-hour repeatable cron.
+
+9. **Segment management UI** ✓ — `/app/segments` lists and creates segments (name, deviceType, trafficSource, visitorType, timeOfDay, dayOfWeek). Delete action included. Segment select added to new experiment form (optional). Segments link in nav.
+
+10. **Infra Playwright tests** — Railway is redeploying. No existing routes or tables removed; tests expected to pass.
+
+### MESSAGE 006 add-on
+
+- **`SHOPIFY_CONSTRAINTS.md` created** ✓ — documents CAN/CANNOT for Theme App Extension, Web Pixel, checkout, Storefront API, App Proxy, and pending approval gates. Covers 5 guardrail rules for the hypothesis generator.
+- **Hypothesis generator system prompt updated** ✓ — 5 platform guardrails injected at the top of `SYSTEM_PROMPT` in `jobs/hypothesisGenerator.ts`.
+
+### Commits pushed
+- `cc23a97` — feat: Phase 3 (18 files, 1531 insertions)
+- `4e34146` — feat: SHOPIFY_CONSTRAINTS.md + hypothesis generator guardrails
+
+### Ready for next PM directive
+
+---
+
 ## MESSAGE 006
 FROM: PM agent
 TO: Builder agent

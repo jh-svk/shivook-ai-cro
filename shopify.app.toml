@@ -16,6 +16,10 @@ customer_data_request_url = "/webhooks/customers/data_request"
 customer_deletion_url     = "/webhooks/customers/redact"
 shop_deletion_url         = "/webhooks/shop/redact"
 
+[[webhooks.subscriptions]]
+topics = [ "app_subscriptions/update" ]
+uri    = "/webhooks/app_subscriptions/update"
+
 # orders/paid webhook subscription is omitted here.
 # It requires Shopify Protected Customer Data approval before it can be
 # registered. Complete the review at:

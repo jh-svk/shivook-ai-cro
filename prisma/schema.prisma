@@ -30,24 +30,42 @@ model Session {
 }
 
 model Shop {
-  id                   String             @id @default(uuid())
-  shopifyDomain        String             @unique
-  accessToken          String
-  maxConcurrentTests   Int                @default(5)
-  requireHumanApproval Boolean            @default(false)
-  brandGuardrails      Json?
-  slackWebhookUrl      String?
-  installedAt          DateTime           @default(now())
-  timezone             String             @default("UTC")
-  experiments          Experiment[]
-  dataSources          DataSource[]
-  researchReports      ResearchReport[]
-  hypotheses           Hypothesis[]
-  knowledgeBase        KnowledgeBase[]
-  segments             Segment[]
-  orchestratorLogs     OrchestratorLog[]
+  id                     String             @id @default(uuid())
+  shopifyDomain          String             @unique
+  accessToken            String
+  maxConcurrentTests     Int                @default(5)
+  requireHumanApproval   Boolean            @default(false)
+  brandGuardrails        Json?
+  slackWebhookUrl        String?
+  installedAt            DateTime           @default(now())
+  timezone               String             @default("UTC")
+  onboardingCompletedAt  DateTime?
+  experiments            Experiment[]
+  dataSources            DataSource[]
+  researchReports        ResearchReport[]
+  hypotheses             Hypothesis[]
+  knowledgeBase          KnowledgeBase[]
+  segments               Segment[]
+  orchestratorLogs       OrchestratorLog[]
+  subscription           Subscription?
 
   @@map("shops")
+}
+
+model Subscription {
+  id                String    @id @default(uuid())
+  shopId            String    @unique
+  shopifyChargeId   String    @unique
+  plan              String    // starter | growth | pro
+  status            String    // active | frozen | cancelled | pending
+  trialEndsAt       DateTime?
+  activatedAt       DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  shop              Shop      @relation(fields: [shopId], references: [id])
+
+  @@map("subscriptions")
 }
 
 model Experiment {

@@ -1,6 +1,5 @@
 import prisma from "../app/db.server";
-
-const DEFAULT_MAX = 20;
+import { getPlanConcurrentLimit } from "./planGate.server";
 
 export async function canActivateExperiment(
   experimentId: string
@@ -13,10 +12,13 @@ export async function canActivateExperiment(
 
   const { shopId, pageType, elementType, segmentId } = experiment;
 
-  const maxConcurrent = parseInt(process.env.MAX_CONCURRENT_TESTS ?? "", 10) || DEFAULT_MAX;
+  const maxConcurrent = await getPlanConcurrentLimit(shopId);
   const activeCount = await prisma.experiment.count({
     where: { shopId, status: "active" },
   });
+  if (maxConcurrent === 0) {
+    return { allowed: false, reason: "no active subscription — upgrade to activate tests" };
+  }
   if (activeCount >= maxConcurrent) {
     return { allowed: false, reason: "concurrent test limit reached" };
   }

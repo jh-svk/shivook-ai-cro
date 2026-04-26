@@ -6,6 +6,7 @@ import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
 import { dataSyncQueue } from "../../jobs/dataSync";
 import { researchSynthesisQueue } from "../../jobs/researchSynthesis";
+import { hasPlanFeature } from "../../lib/planGate.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -34,6 +35,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(fd.get("intent"));
 
   if (intent === "generate") {
+    const allowed = await hasPlanFeature(shop.id, "ai_hypotheses");
+    if (!allowed) {
+      return { error: "AI hypotheses require the Growth or Pro plan. Upgrade at /app/billing." };
+    }
     // Kick off nightly pipeline manually: sync → synthesise → generate
     await dataSyncQueue.add(`manual-sync-${shop.id}`, { shopId: shop.id });
     await researchSynthesisQueue.add(

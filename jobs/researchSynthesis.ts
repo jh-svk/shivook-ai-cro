@@ -39,13 +39,17 @@ Output valid markdown.`;
 }
 
 function buildDataPrompt(snapshot: Record<string, unknown>, pastTests: string): string {
+  const claritySection = snapshot.clarity
+    ? `## Heatmap Data (Clarity)\n\`\`\`json\n${JSON.stringify(snapshot.clarity, null, 2)}\n\`\`\`\n\nInterpretation guidance:\n- High rage click count on a page signals user frustration — likely a broken element or confusing CTA\n- Low scroll depth on product pages signals poor content hierarchy — key info may be below the fold\n- High dead click count indicates broken UX expectations — elements that look clickable but aren't\n\n`
+    : "## Heatmap Data (Clarity)\nNot connected.\n\n";
+
   return `## Store Data Snapshot (last 30 days)
 
 \`\`\`json
-${JSON.stringify(snapshot, null, 2)}
+${JSON.stringify({ ...snapshot, clarity: undefined }, null, 2)}
 \`\`\`
 
-## Past Test History
+${claritySection}## Past Test History
 ${pastTests || "No prior tests completed yet."}
 
 ---

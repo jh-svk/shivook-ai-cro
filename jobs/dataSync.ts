@@ -2,6 +2,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import { connection } from "../lib/queue";
 import { fetchGA4Snapshot, type GA4Config } from "../lib/connectors/ga4.server";
 import { fetchShopifyFunnelSnapshot } from "../lib/connectors/shopifyAdmin.server";
+import { fetchClaritySnapshot, type ClarityConfig } from "../lib/connectors/clarity.server";
 import prisma from "../app/db.server";
 
 export const DATA_SYNC_QUEUE = "data-sync";
@@ -55,6 +56,17 @@ async function runDataSync(shopId: string) {
       snapshot.ga4 = await fetchGA4Snapshot(config);
     } catch (err) {
       console.error(`[dataSync] GA4 connector failed for ${shop.shopifyDomain}`, err);
+    }
+  }
+
+  // Clarity — only if a Clarity data source is configured
+  const claritySource = shop.dataSources.find((s) => s.type === "clarity");
+  if (claritySource) {
+    try {
+      const config = claritySource.config as unknown as ClarityConfig;
+      snapshot.clarity = await fetchClaritySnapshot(config);
+    } catch (err) {
+      console.error(`[dataSync] Clarity connector failed for ${shop.shopifyDomain}`, err);
     }
   }
 

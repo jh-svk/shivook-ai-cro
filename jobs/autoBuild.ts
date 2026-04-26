@@ -12,6 +12,7 @@ import { connection } from "../lib/queue";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import { activationGateQueue } from "./activationGate";
+import { hasPlanFeature } from "../lib/planGate.server";
 
 export const AUTO_BUILD_QUEUE = "auto-build";
 
@@ -80,7 +81,13 @@ function qaGate(htmlPatch: string | null, jsPatch: string | null): { passed: boo
 }
 
 async function runAutoBuild(shopId: string, hypothesisId: string) {
-  const runId = hypothesisId; // use hypothesisId as runId for traceability
+  const runId = hypothesisId;
+
+  const allowed = await hasPlanFeature(shopId, "auto_build");
+  if (!allowed) {
+    console.log(`[autoBuild] shop ${shopId} does not have auto_build feature — skipping`);
+    return;
+  }
 
   const hypothesis = await prisma.hypothesis.findUnique({
     where: { id: hypothesisId, shopId },

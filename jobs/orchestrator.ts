@@ -16,6 +16,7 @@ import { dataSyncQueue } from "./dataSync";
 import { researchSynthesisQueue } from "./researchSynthesis";
 import { autoBuildQueue } from "./autoBuild";
 import { writeKnowledgeBaseEntry } from "../lib/knowledgeBase.server";
+import { hasPlanFeature } from "../lib/planGate.server";
 
 export const ORCHESTRATOR_QUEUE = "orchestrator";
 
@@ -78,6 +79,12 @@ async function stageHypothesis(shopId: string, runId: string) {
 }
 
 async function stageBuild(shopId: string, runId: string) {
+  const allowed = await hasPlanFeature(shopId, "orchestrator");
+  if (!allowed) {
+    await log(shopId, runId, "BUILD", "skipped", { reason: "plan does not include orchestrator" });
+    return;
+  }
+
   const hypothesis = await prisma.hypothesis.findFirst({
     where: { shopId, status: "backlog" },
     orderBy: { iceScore: "desc" },
