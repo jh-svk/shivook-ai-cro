@@ -50,7 +50,14 @@ type RawHypothesis = {
 const SYSTEM_PROMPT = `You are a senior CRO strategist. Generate specific, testable A/B test hypotheses.
 Each hypothesis must follow the format:
 "We believe [change] on [page] will [increase/decrease] [metric] because [reasoning]."
-ICE scores (1-10 each): Impact = potential conversion uplift, Confidence = evidence strength, Ease = implementation difficulty (10 = easiest).`;
+ICE scores (1-10 each): Impact = potential conversion uplift, Confidence = evidence strength, Ease = implementation difficulty (10 = easiest).
+
+PLATFORM GUARDRAILS — you must respect these Shopify constraints:
+- Never suggest experiments that modify the checkout page (inaccessible on standard Shopify plans)
+- Never suggest experiments requiring logged-in customer data (Storefront API not configured)
+- All variant code must run as async JS or CSS injection — no synchronous scripts
+- Experiments must target product pages, collection pages, cart page, or homepage only
+- Keep JS patches under 10kb — suggest lightweight DOM changes, not full component rewrites`;
 
 function buildHypothesisPrompt(reportMd: string, pastTests: string): string {
   return `## Research Report
