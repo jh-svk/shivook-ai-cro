@@ -36,13 +36,19 @@ const ALLOWED_ACTIONS: Record<
 };
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
   try {
-    const experiment = await prisma.experiment.findUnique({
-      where: { id: params.id },
-      include: { variants: true, result: true, segment: true },
-    });
+    const [experiment, shop] = await Promise.all([
+      prisma.experiment.findUnique({
+        where: { id: params.id },
+        include: { variants: true, result: true, segment: true },
+      }),
+      prisma.shop.findUnique({
+        where: { shopifyDomain: session.shop },
+        select: { shopifyDomain: true },
+      }),
+    ]);
     if (!experiment) throw new Response("Not Found", { status: 404 });
 
     // Load QA log for pending_approval experiments
@@ -53,7 +59,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         })
       : null;
 
-    return { experiment, qaLog };
+    return { experiment, qaLog, shopDomain: shop?.shopifyDomain ?? "" };
   } catch (error) {
     if (error instanceof Response) throw error;
     console.error("[experiments.$id] loader error", error);
@@ -151,7 +157,7 @@ function CodePreview({ label, code }: { label: string; code: string }) {
 }
 
 export default function ExperimentDetail() {
-  const { experiment, qaLog } = useLoaderData<typeof loader>();
+  const { experiment, qaLog, shopDomain } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -383,6 +389,26 @@ export default function ExperimentDetail() {
                         No patches — serves the storefront as-is.
                       </s-paragraph>
                     )}
+                  {shopDomain && (
+                    <s-stack direction="block" gap="small">
+                      <s-button
+                        type="button"
+                        variant="secondary"
+                        href={`https://${shopDomain}/?cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
+                        target="_blank"
+                      >
+                        Preview on storefront ↗
+                      </s-button>
+                      <s-text tone="subdued">
+                        Opens your storefront in a new tab with this variant applied. No effect on live traffic or results.
+                      </s-text>
+                      {experiment.pageType !== "homepage" && experiment.pageType !== "any" && (
+                        <s-text tone="subdued">
+                          Navigate to a {experiment.pageType} page to see the variant in context.
+                        </s-text>
+                      )}
+                    </s-stack>
+                  )}
                 </s-stack>
               </s-box>
             ))}

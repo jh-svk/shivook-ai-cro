@@ -157,6 +157,55 @@
     }).catch(function () {});
   }
 
+  // ── Preview mode ─────────────────────────────────────────────────────────────
+  var previewParams        = new URLSearchParams(window.location.search);
+  var previewExperimentId  = previewParams.get('cro_preview_experiment');
+  var previewVariantId     = previewParams.get('cro_preview_variant');
+
+  if (previewExperimentId && previewVariantId) {
+    // Preview mode: apply a specific variant without touching localStorage or firing events
+    var root = document.getElementById('cro-injector-root');
+    var pageType = root ? (root.dataset.pageType || '') : '';
+
+    fetch(
+      PROXY_BASE + '/api/experiments?pageType=' + encodeURIComponent(pageType) + '&preview=1',
+      { credentials: 'same-origin' }
+    )
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || !Array.isArray(data.experiments)) return;
+
+        for (var ei = 0; ei < data.experiments.length; ei++) {
+          var exp = data.experiments[ei];
+          if (exp.id !== previewExperimentId) continue;
+
+          var variant = null;
+          for (var vi = 0; vi < exp.variants.length; vi++) {
+            if (exp.variants[vi].id === previewVariantId) { variant = exp.variants[vi]; break; }
+          }
+          if (!variant) break;
+
+          applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+
+          // Preview banner
+          var banner = document.createElement('div');
+          banner.id = 'cro-preview-banner';
+          banner.style.cssText = [
+            'position:fixed', 'bottom:16px', 'right:16px', 'z-index:999999',
+            'background:#000', 'color:#fff', 'font-size:12px', 'padding:8px 12px',
+            'border-radius:6px', 'font-family:sans-serif', 'opacity:0.85',
+            'pointer-events:none',
+          ].join(';');
+          banner.textContent = 'CRO Preview — ' + (variant.type || 'variant') + ' variant';
+          document.body.appendChild(banner);
+          break;
+        }
+      })
+      .catch(function () {});
+
+    return; // Do not run normal assignment logic in preview mode
+  }
+
   // ── Bootstrap ───────────────────────────────────────────────────────────────
   var root = document.getElementById('cro-injector-root');
   if (!root) return;

@@ -51,7 +51,7 @@ export default function PrivacyPolicy() {
       </table>
 
       <h2>How to request data deletion</h2>
-      <p>To request deletion of all data associated with your store, email <a href="mailto:jacob@shivook.com">jacob@shivook.com</a> with your Shopify store domain. We will delete all experiment data, events, and results within 30 days.</p>
+      <p>To request deletion of all data associated with your store, email <a href="mailto:support@shivook.com">support@shivook.com</a> with your Shopify store domain. We will delete all experiment data, events, and results within 30 days.</p>
       <p>Uninstalling the app from your Shopify store triggers our GDPR shop deletion webhook, which removes all store-level data automatically within 48 hours.</p>
 
       <h2>GDPR compliance</h2>

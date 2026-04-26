@@ -11,6 +11,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const shopDomain = url.searchParams.get("shop");
   const pageType = url.searchParams.get("pageType") ?? "";
+  const isPreview = url.searchParams.get("preview") === "1";
 
   if (!shopDomain) {
     return Response.json({ error: "Missing shop parameter" }, { status: 400 });
@@ -25,10 +26,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return Response.json({ experiments: [] }, { status: 200 });
     }
 
+    const statusFilter = isPreview
+      ? { in: ["active", "paused", "draft", "pending_approval"] }
+      : { equals: "active" };
+
     const experiments = await prisma.experiment.findMany({
       where: {
         shopId: shop.id,
-        status: "active",
+        status: statusFilter,
         OR: [{ pageType }, { pageType: "any" }],
       },
       select: {
