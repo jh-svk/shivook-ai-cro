@@ -19,7 +19,17 @@ const PLAN_LIMITS: Record<PlanHandle, number> = {
   none:    0,
 };
 
+// Shops listed here get Pro access without a subscription (owner bypass).
+const OWNER_SHOP_DOMAINS = (process.env.OWNER_SHOP_DOMAINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+async function isOwnerShop(shopId: string): Promise<boolean> {
+  if (OWNER_SHOP_DOMAINS.length === 0) return false;
+  const shop = await prisma.shop.findUnique({ where: { id: shopId }, select: { shopifyDomain: true } });
+  return !!shop && OWNER_SHOP_DOMAINS.includes(shop.shopifyDomain);
+}
+
 export async function getShopPlan(shopId: string): Promise<PlanHandle> {
+  if (await isOwnerShop(shopId)) return "pro";
   const sub = await prisma.subscription.findUnique({ where: { shopId } });
   if (!sub) return "none";
   if (sub.status === "cancelled" || sub.status === "frozen") return "none";
@@ -50,6 +60,9 @@ export async function assertPlanFeature(shopId: string, feature: FeatureKey): Pr
 export async function getSubscriptionStatus(
   shopId: string
 ): Promise<{ plan: PlanHandle; trialDaysLeft: number | null; hasSubscription: boolean }> {
+  if (await isOwnerShop(shopId)) {
+    return { plan: "pro", trialDaysLeft: null, hasSubscription: true };
+  }
   const sub = await prisma.subscription.findUnique({ where: { shopId } });
   const plan = await getShopPlan(shopId);
 
