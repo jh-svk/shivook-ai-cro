@@ -11,6 +11,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import { connection } from "../lib/queue";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
+import { hypothesisGeneratorQueue } from "./hypothesisGenerator";
 
 export const RESEARCH_SYNTHESIS_QUEUE = "research-synthesis";
 
@@ -117,6 +118,13 @@ async function runResearchSynthesis(shopId: string) {
     });
 
     console.log(`[researchSynthesis] report complete for shop ${shopId}`);
+
+    await hypothesisGeneratorQueue.add(`gen-${shopId}`, {
+      shopId,
+      reportId: reportRecord.id,
+    });
+    console.log(`[researchSynthesis] enqueued hypothesis generator for report ${reportRecord.id}`);
+
     return reportRecord.id;
   } catch (err) {
     await prisma.researchReport.update({
