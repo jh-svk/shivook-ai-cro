@@ -34,6 +34,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       select: {
         id: true,
         trafficSplit: true,
+        segment: {
+          select: {
+            deviceType: true,
+            trafficSource: true,
+            visitorType: true,
+            timeOfDayFrom: true,
+            timeOfDayTo: true,
+            dayOfWeek: true,
+            productCategory: true,
+            cartState: true,
+          },
+        },
         variants: {
           select: {
             id: true,

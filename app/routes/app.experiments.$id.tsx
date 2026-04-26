@@ -1,8 +1,9 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useLoaderData, useNavigation } from "react-router";
+import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
+import { canActivateExperiment } from "../../lib/concurrentTestManager.server";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -11,6 +12,7 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   active: "success",
   paused: "warning",
   concluded: "neutral",
+  pending_approval: "warning",
 };
 
 const ALLOWED_ACTIONS: Record<
@@ -27,6 +29,10 @@ const ALLOWED_ACTIONS: Record<
     { label: "End test", intent: "end", variant: "secondary", tone: "critical" },
   ],
   concluded: [],
+  pending_approval: [
+    { label: "Approve & activate", intent: "approve", variant: "primary" },
+    { label: "Reject", intent: "reject_approval", variant: "secondary", tone: "critical" },
+  ],
 };
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -35,7 +41,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
     const experiment = await prisma.experiment.findUnique({
       where: { id: params.id },
-      include: { variants: true, result: true },
+      include: { variants: true, result: true, segment: true },
     });
     if (!experiment) throw new Response("Not Found", { status: 404 });
     return { experiment };
@@ -52,8 +58,48 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const fd = await request.formData();
   const intent = String(fd.get("intent"));
 
+  if (intent === "activate") {
+    const check = await canActivateExperiment(params.id!);
+    if (!check.allowed) return { error: check.reason ?? "Cannot activate experiment." };
+    try {
+      await prisma.experiment.update({
+        where: { id: params.id },
+        data: { status: "active", startedAt: new Date() },
+      });
+      return { success: true };
+    } catch (error) {
+      console.error("[experiments.$id] activate error", error);
+      return { error: "Failed to activate experiment." };
+    }
+  }
+
+  if (intent === "approve") {
+    try {
+      await prisma.experiment.update({
+        where: { id: params.id },
+        data: { status: "active", startedAt: new Date() },
+      });
+      return { success: true };
+    } catch (error) {
+      console.error("[experiments.$id] approve error", error);
+      return { error: "Failed to approve experiment." };
+    }
+  }
+
+  if (intent === "reject_approval") {
+    try {
+      await prisma.experiment.update({
+        where: { id: params.id },
+        data: { status: "draft" },
+      });
+      return { success: true };
+    } catch (error) {
+      console.error("[experiments.$id] reject_approval error", error);
+      return { error: "Failed to reject experiment." };
+    }
+  }
+
   const transitions: Record<string, { status: string; extra?: object }> = {
-    activate: { status: "active", extra: { startedAt: new Date() } },
     pause: { status: "paused" },
     resume: { status: "active" },
     end: { status: "concluded", extra: { concludedAt: new Date() } },
@@ -97,6 +143,7 @@ function CodePreview({ label, code }: { label: string; code: string }) {
 
 export default function ExperimentDetail() {
   const { experiment } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
@@ -110,6 +157,12 @@ export default function ExperimentDetail() {
       <s-button slot="primary-action" type="button" variant="tertiary" href="/app">
         All experiments
       </s-button>
+
+      {actionData && "error" in actionData && (
+        <s-banner tone="critical" heading="Error">
+          <s-paragraph>{(actionData as { error: string }).error}</s-paragraph>
+        </s-banner>
+      )}
 
       <s-section heading="Status">
         <s-stack direction="block" gap="base">
@@ -266,6 +319,12 @@ export default function ExperimentDetail() {
             <s-paragraph>
               <s-text>Concluded: </s-text>
               {new Date(experiment.concludedAt).toLocaleDateString()}
+            </s-paragraph>
+          )}
+          {experiment.segment && (
+            <s-paragraph>
+              <s-text>Segment: </s-text>
+              {experiment.segment.name}
             </s-paragraph>
           )}
         </s-stack>

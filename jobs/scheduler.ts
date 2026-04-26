@@ -4,6 +4,7 @@ import { resultRefreshQueue } from "./resultRefresh";
 import { dataSyncQueue } from "./dataSync";
 import { researchSynthesisQueue } from "./researchSynthesis";
 import { hypothesisGeneratorQueue } from "./hypothesisGenerator";
+import { orchestratorQueue } from "./orchestrator";
 import prisma from "../app/db.server";
 
 const SCHEDULER_QUEUE = "scheduler";
@@ -43,16 +44,20 @@ async function runNightlyScheduler() {
   console.log(`[scheduler] nightly sync for ${shops.length} shops`);
 
   for (const { id: shopId } of shops) {
-    // 1. Sync data connectors
     await dataSyncQueue.add(`sync-${shopId}`, { shopId });
-
-    // 2. Research synthesis (only if data sync completes — chained via job events
-    //    in the worker; here we fire it 10 min after sync to allow time)
     await researchSynthesisQueue.add(
       `research-${shopId}`,
       { shopId },
       { delay: 10 * 60 * 1000 }
     );
+  }
+}
+
+async function runOrchestratorScheduler() {
+  const shops = await prisma.shop.findMany({ select: { id: true } });
+  console.log(`[scheduler] orchestrator tick for ${shops.length} shops`);
+  for (const { id: shopId } of shops) {
+    await orchestratorQueue.add(`orch-${shopId}`, { shopId });
   }
 }
 
@@ -62,6 +67,8 @@ export function startSchedulerWorker() {
     async (job) => {
       if (job.name === "nightly") {
         await runNightlyScheduler();
+      } else if (job.name === "orchestrator-tick") {
+        await runOrchestratorScheduler();
       } else {
         await runHourlyScheduler();
       }
@@ -76,15 +83,21 @@ export async function registerSchedules() {
 
   // Remove stale schedules to prevent duplicates on restart
   for (const job of repeatables) {
-    if (job.name === "hourly-result-refresh" || job.name === "hourly" || job.name === "nightly") {
+    if (
+      job.name === "hourly-result-refresh" ||
+      job.name === "hourly" ||
+      job.name === "nightly" ||
+      job.name === "orchestrator-tick"
+    ) {
       await schedulerQueue.removeRepeatableByKey(job.key);
     }
   }
 
   await schedulerQueue.add("hourly", {}, { repeat: { every: ONE_HOUR_MS } });
   await schedulerQueue.add("nightly", {}, { repeat: { every: ONE_DAY_MS } });
+  await schedulerQueue.add("orchestrator-tick", {}, { repeat: { every: 6 * ONE_HOUR_MS } });
 
-  console.log("[scheduler] hourly + nightly schedules registered");
+  console.log("[scheduler] hourly + nightly + orchestrator schedules registered");
 }
 
 /** @deprecated Use registerSchedules */

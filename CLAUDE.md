@@ -41,8 +41,15 @@ Build exactly these tables and no others:
 
 Full field definitions are in SCHEMA.md.
 
-## Experiment lifecycle for phase 1
+## Experiment lifecycle
 DRAFT → ACTIVE → PAUSED → CONCLUDED
+
+When REQUIRE_HUMAN_APPROVAL=true, auto-built experiments land in:
+DRAFT → PENDING_APPROVAL → ACTIVE → PAUSED → CONCLUDED
+
+## Environment variables (Phase 3 additions)
+- MAX_CONCURRENT_TESTS: max active experiments per shop (default 20)
+- REQUIRE_HUMAN_APPROVAL: if "true" (default), auto-built experiments require merchant approval before activating
 
 Transitions:
 - DRAFT to ACTIVE: merchant clicks Activate in the dashboard

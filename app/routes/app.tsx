@@ -20,6 +20,7 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Experiments</s-link>
         <s-link href="/app/hypotheses">AI Hypotheses</s-link>
+        <s-link href="/app/segments">Segments</s-link>
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />

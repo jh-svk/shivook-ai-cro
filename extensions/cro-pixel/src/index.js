@@ -92,6 +92,12 @@ register(({ analytics, browser, init }) => {
     }
   });
 
+  analytics.subscribe("checkout_completed", () => {
+    try {
+      browser.localStorage.setItem("cro_has_purchased", "1");
+    } catch (_) {}
+  });
+
   analytics.subscribe("checkout_started", (event) => {
     const visitorId = safeLocalStorageGet(VISITOR_KEY);
     const sessionId = safeSessionStorageGet(SESSION_KEY);

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, redirect, useActionData, useNavigation } from "react-router";
+import { Form, redirect, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -8,8 +8,14 @@ import { findOrCreateShop } from "../../lib/shop.server";
 import { CodeEditor } from "../components/CodeEditor";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { session } = await authenticate.admin(request);
+  const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
+  const segments = await prisma.segment.findMany({
+    where: { shopId: shop.id },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true },
+  });
+  return { segments };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -34,7 +40,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const nullIfEmpty = (v: string) => v || null;
 
   try {
-    const experiment = await prisma.experiment.create({
+    const segmentIdRaw = String(fd.get("segmentId") ?? "").trim();
+  const segmentId = segmentIdRaw || null;
+
+  const experiment = await prisma.experiment.create({
       data: {
         shopId: shop.id,
         name,
@@ -44,6 +53,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         targetMetric,
         trafficSplit: 0.5,
         maxRuntimeDays,
+        segmentId,
         variants: {
           create: [
             {
@@ -101,6 +111,7 @@ const TARGET_METRICS = [
 ];
 
 export default function NewExperiment() {
+  const { segments } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -172,6 +183,16 @@ export default function NewExperiment() {
                 max={90}
               />
             </s-stack>
+            {segments.length > 0 && (
+              <s-select name="segmentId" label="Audience segment (optional)">
+                <s-option value="">All visitors</s-option>
+                {segments.map((seg) => (
+                  <s-option key={seg.id} value={seg.id}>
+                    {seg.name}
+                  </s-option>
+                ))}
+              </s-select>
+            )}
             <s-banner tone="info" heading="Traffic split">
               <s-paragraph>
                 Phase 1 uses a fixed 50/50 traffic split between control and

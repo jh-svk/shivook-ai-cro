@@ -12,7 +12,6 @@
     var hash = 0x811c9dc5;
     for (var i = 0; i < str.length; i++) {
       hash ^= str.charCodeAt(i);
-      // Math.imul gives correct 32-bit multiply without BigInt
       hash = Math.imul(hash, 0x01000193);
     }
     return hash >>> 0;
@@ -38,6 +37,66 @@
     return v;
   }
 
+  // ── Segmentation helpers ────────────────────────────────────────────────────
+  function detectDevice() {
+    var w = window.innerWidth;
+    if (w <= 768) return 'mobile';
+    if (w <= 1024) return 'tablet';
+    return 'desktop';
+  }
+
+  function detectSource() {
+    var params = new URLSearchParams(window.location.search);
+    var utmMedium = params.get('utm_medium') || '';
+    if (utmMedium === 'cpc' || utmMedium === 'paid') return 'paid';
+    if (utmMedium === 'email') return 'email';
+    var ref = document.referrer;
+    if (!ref) return 'direct';
+    if (/facebook\.com|twitter\.com|instagram\.com|tiktok\.com/.test(ref)) return 'social';
+    if (/google\.|bing\./.test(ref) && !utmMedium) return 'organic';
+    return 'direct';
+  }
+
+  function detectVisitorType() {
+    if (lsGet('cro_has_purchased')) return 'purchaser';
+    if (lsGet(LS_VISITOR)) return 'returning';
+    return 'new';
+  }
+
+  function buildContext() {
+    return {
+      deviceType:    detectDevice(),
+      trafficSource: detectSource(),
+      visitorType:   detectVisitorType(),
+      hour:          new Date().getHours(),
+      dayOfWeek:     new Date().getDay(),
+      cartState:     'any',
+    };
+  }
+
+  // Returns true if the visitor matches the segment (null segment = always match)
+  function matchesSegment(segment, ctx) {
+    if (!segment) return true;
+
+    if (segment.deviceType && segment.deviceType !== 'any' &&
+        segment.deviceType !== ctx.deviceType) return false;
+
+    if (segment.trafficSource && segment.trafficSource !== 'any' &&
+        segment.trafficSource !== ctx.trafficSource) return false;
+
+    if (segment.visitorType && segment.visitorType !== 'any' &&
+        segment.visitorType !== ctx.visitorType) return false;
+
+    if (segment.timeOfDayFrom != null && ctx.hour < segment.timeOfDayFrom) return false;
+    if (segment.timeOfDayTo   != null && ctx.hour > segment.timeOfDayTo)   return false;
+
+    if (segment.dayOfWeek && segment.dayOfWeek.length > 0 &&
+        segment.dayOfWeek.indexOf(ctx.dayOfWeek) === -1) return false;
+
+    // productCategory and cartState: stub — always match in Phase 3
+    return true;
+  }
+
   // ── Variant assignment (stable per visitor + experiment) ────────────────────
   function assignVariant(visitorId, experimentId) {
     var key    = LS_ASSIGN_PFX + experimentId;
@@ -51,7 +110,6 @@
 
   // ── DOM patching ────────────────────────────────────────────────────────────
   function applyPatch(htmlPatch, cssPatch, jsPatch) {
-    // CSS first so it's in place before HTML renders
     if (cssPatch) {
       try {
         var style = document.createElement('style');
@@ -66,7 +124,6 @@
         document.body.appendChild(frag);
       } catch (_) {
         try {
-          // Fallback for browsers without createContextualFragment
           var tmp = document.createElement('div');
           tmp.innerHTML = htmlPatch;
           while (tmp.firstChild) document.body.appendChild(tmp.firstChild);
@@ -76,7 +133,6 @@
 
     if (jsPatch) {
       try {
-        // Run in a sandboxed function scope — never use eval()
         // eslint-disable-next-line no-new-func
         (new Function(jsPatch))();
       } catch (_) {}
@@ -93,7 +149,6 @@
         return;
       }
     } catch (_) {}
-    // Fetch fallback with keepalive so it survives page navigations
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -109,6 +164,7 @@
   var pageType  = root.dataset.pageType || '';
   var visitorId = getOrCreate(lsGet, lsSet, LS_VISITOR,  uuid4);
   var sessionId = getOrCreate(ssGet, ssSet, SS_SESSION,  uuid4);
+  var ctx       = buildContext();
 
   fetch(
     PROXY_BASE + '/api/experiments?pageType=' + encodeURIComponent(pageType),
@@ -119,6 +175,9 @@
       if (!data || !Array.isArray(data.experiments)) return;
 
       data.experiments.forEach(function (exp) {
+        // Skip experiments this visitor doesn't match
+        if (!matchesSegment(exp.segment, ctx)) return;
+
         var variantType = assignVariant(visitorId, exp.id);
 
         var variant = null;
@@ -127,7 +186,6 @@
         }
         if (!variant) return;
 
-        // Store variant ID so the web pixel can read it for add_to_cart / checkout events
         lsSet(LS_VID_PFX + exp.id, variant.id);
 
         applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);

@@ -16,12 +16,14 @@
 ### experiments
 - id: String @id @default(uuid())
 - shopId: String (FK → shops)
+- segmentId: String? (FK → segments — null means all visitors)
 - name: String
 - hypothesis: String
 - pageType: String (product | collection | cart | homepage | any)
 - elementType: String (headline | cta | image | layout | trust | price | other)
 - targetMetric: String (conversion_rate | add_to_cart_rate | revenue_per_visitor)
-- status: String @default("draft") (draft | active | paused | concluded)
+- status: String @default("draft") (draft | pending_approval | active | paused | concluded)
+  - pending_approval: auto-built experiment awaiting merchant sign-off (REQUIRE_HUMAN_APPROVAL=true)
 - trafficSplit: Float @default(0.5)
 - minRuntimeDays: Int @default(7)
 - maxRuntimeDays: Int @default(28)
@@ -110,7 +112,8 @@
 - iceConfidence: Int (1-10)
 - iceEase: Int (1-10)
 - iceScore: Float (impact * confidence * ease, max 1000)
-- status: String @default("backlog") (backlog | promoted | rejected)
+- status: String @default("backlog") (backlog | promoted | rejected | qa_failed)
+  - qa_failed: auto-build passed QA gate but patches were too large or contained sync scripts
 - promotedExperimentId: String? (FK → experiments, set when promoted)
 - createdAt: DateTime @default(now())
 - Index on shopId, iceScore
@@ -133,13 +136,31 @@
 
 ---
 
-## Phase 3 tables (planned)
+## Phase 3 tables
 
 ### segments
-- id, shopId, name, deviceType, trafficSource, visitorType,
-  geoCountry[], geoRegion[], timeOfDay{from,to}, dayOfWeek[],
-  productCategory[], cartState, customerTags[]
+- id: String @id @default(uuid())
+- shopId: String (FK → shops)
+- name: String
+- deviceType: String? (mobile | tablet | desktop | null=any)
+- trafficSource: String? (paid | organic | email | direct | social | null=any)
+- visitorType: String? (new | returning | purchaser | null=any)
+- geoCountry: String[] (empty = any)
+- timeOfDayFrom: Int? (0-23, null = no restriction)
+- timeOfDayTo: Int? (0-23, null = no restriction)
+- dayOfWeek: Int[] (0=Sun…6=Sat, empty = any)
+- productCategory: String[] (Shopify collection handles, stub in Phase 3)
+- cartState: String? (empty | has_items | abandoned | null=any, stub in Phase 3)
+- createdAt: DateTime @default(now())
+- Index on shopId
 
 ### orchestrator_log
-- id, shopId, stage (RESEARCH|HYPOTHESIS|BUILD|QA|ACTIVATE|MONITOR|DECIDE|SHIP),
-  status, payload, startedAt, completedAt
+- id: String @id @default(uuid())
+- shopId: String (FK → shops)
+- runId: String (groups all stages in one orchestrator cycle)
+- stage: String (RESEARCH | HYPOTHESIS | BUILD | QA | ACTIVATE | MONITOR | DECIDE | SHIP)
+- status: String (running | complete | failed | skipped)
+- payload: Json (input/output for that stage — for debugging)
+- startedAt: DateTime @default(now())
+- completedAt: DateTime?
+- Index on shopId, runId

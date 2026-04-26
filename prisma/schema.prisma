@@ -30,20 +30,22 @@ model Session {
 }
 
 model Shop {
-  id                   String           @id @default(uuid())
-  shopifyDomain        String           @unique
+  id                   String             @id @default(uuid())
+  shopifyDomain        String             @unique
   accessToken          String
-  maxConcurrentTests   Int              @default(5)
-  requireHumanApproval Boolean          @default(false)
+  maxConcurrentTests   Int                @default(5)
+  requireHumanApproval Boolean            @default(false)
   brandGuardrails      Json?
   slackWebhookUrl      String?
-  installedAt          DateTime         @default(now())
-  timezone             String           @default("UTC")
+  installedAt          DateTime           @default(now())
+  timezone             String             @default("UTC")
   experiments          Experiment[]
   dataSources          DataSource[]
   researchReports      ResearchReport[]
   hypotheses           Hypothesis[]
   knowledgeBase        KnowledgeBase[]
+  segments             Segment[]
+  orchestratorLogs     OrchestratorLog[]
 
   @@map("shops")
 }
@@ -51,6 +53,7 @@ model Shop {
 model Experiment {
   id             String         @id @default(uuid())
   shopId         String
+  segmentId      String?
   name           String
   hypothesis     String
   pageType       String
@@ -65,6 +68,7 @@ model Experiment {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
   shop           Shop           @relation(fields: [shopId], references: [id])
+  segment        Segment?       @relation(fields: [segmentId], references: [id])
   variants       Variant[]
   events         Event[]
   result         Result?
@@ -187,6 +191,45 @@ model Hypothesis {
   @@index([shopId])
   @@index([iceScore])
   @@map("hypotheses")
+}
+
+// ── Phase 3 tables ──────────────────────────────────────────────────────────
+
+model Segment {
+  id              String       @id @default(uuid())
+  shopId          String
+  name            String
+  deviceType      String?
+  trafficSource   String?
+  visitorType     String?
+  geoCountry      String[]
+  timeOfDayFrom   Int?
+  timeOfDayTo     Int?
+  dayOfWeek       Int[]
+  productCategory String[]
+  cartState       String?
+  createdAt       DateTime     @default(now())
+  shop            Shop         @relation(fields: [shopId], references: [id])
+  experiments     Experiment[]
+
+  @@index([shopId])
+  @@map("segments")
+}
+
+model OrchestratorLog {
+  id          String    @id @default(uuid())
+  shopId      String
+  runId       String
+  stage       String
+  status      String
+  payload     Json
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  shop        Shop      @relation(fields: [shopId], references: [id])
+
+  @@index([shopId])
+  @@index([runId])
+  @@map("orchestrator_log")
 }
 
 model KnowledgeBase {
