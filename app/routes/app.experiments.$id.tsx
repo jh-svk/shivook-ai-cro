@@ -171,12 +171,16 @@ export default function ExperimentDetail() {
                 <s-text>
                   Lift: {(result.relativeLift * 100).toFixed(1)}%
                 </s-text>
-                <s-text>
-                  p-value:{" "}
-                  {result.pValue != null ? result.pValue.toFixed(4) : "—"}
-                </s-text>
+                {result.probToBeatControl != null ? (
+                  <s-text>
+                    Probability to beat control:{" "}
+                    {(result.probToBeatControl * 100).toFixed(1)}%
+                  </s-text>
+                ) : null}
                 <s-badge tone={result.isSignificant ? "success" : "info"}>
-                  {result.isSignificant ? "Significant" : "Not yet significant"}
+                  {result.isSignificant
+                    ? "Winner — 95% confidence"
+                    : "Not yet significant"}
                 </s-badge>
               </s-stack>
             )}

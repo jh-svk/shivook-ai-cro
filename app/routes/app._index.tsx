@@ -50,6 +50,14 @@ export default function ExperimentsIndex() {
       >
         New experiment
       </s-button>
+      <s-button
+        slot="primary-action"
+        type="button"
+        variant="secondary"
+        href="/app/hypotheses"
+      >
+        AI hypotheses
+      </s-button>
 
       {experiments.length === 0 ? (
         <s-section heading="No experiments yet">

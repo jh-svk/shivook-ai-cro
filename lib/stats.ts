@@ -1,3 +1,19 @@
+/**
+ * Bayesian stats engine — Phase 2.
+ *
+ * Uses Beta-Binomial conjugate model:
+ *   Prior:     Beta(1, 1)  — uniform, non-informative
+ *   Posterior: Beta(1 + conversions, 1 + visitors - conversions)
+ *
+ * P(treatment beats control) is estimated via Monte Carlo over the two
+ * posterior distributions.  10 000 samples gives ±1% accuracy which is
+ * more than sufficient for CRO decisions.
+ *
+ * Phase 3 swap point: replace probToBeatControl with a closed-form
+ * calculation using the regularised incomplete beta function if you need
+ * sub-millisecond performance at high sample counts.
+ */
+
 export interface VariantStats {
   visitors: number;
   conversions: number;
@@ -7,31 +23,59 @@ export interface StatsResult {
   controlConversionRate: number;
   treatmentConversionRate: number;
   relativeLift: number | null;
-  pValue: number | null;
+  /** Null in Bayesian mode — kept for schema compatibility. */
+  pValue: null;
+  /** True when probToBeatControl >= 0.95. */
   isSignificant: boolean;
+  /** P(treatment conversion rate > control conversion rate). */
+  probToBeatControl: number | null;
+  /** 95% credible interval lower bound on the treatment lift. */
+  credibleIntervalLower: number | null;
+  /** 95% credible interval upper bound on the treatment lift. */
+  credibleIntervalUpper: number | null;
 }
 
-/**
- * Chi-squared p-value approximation using Wilson-Hilferty normal approximation.
- * Sufficient for 1 degree of freedom (2x2 contingency table).
- */
-function chiSquaredPValue(chiSq: number): number {
-  if (chiSq <= 0) return 1;
-  // Normal approximation: z = sqrt(2*chiSq) - sqrt(2*df - 1), df=1
-  const z = Math.sqrt(2 * chiSq) - Math.sqrt(1);
-  return 1 - standardNormalCDF(z);
+const SAMPLES = 10_000;
+const SIGNIFICANCE_THRESHOLD = 0.95;
+
+// ── Beta distribution sampler (Gamma-ratio method) ──────────────────────────
+
+function sampleGamma(shape: number): number {
+  // Marsaglia–Tsang "squeeze" method for shape >= 1.
+  // For shape < 1: use the Ahrens–Dieter transformation.
+  if (shape < 1) {
+    return sampleGamma(1 + shape) * Math.random() ** (1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  for (;;) {
+    let x: number;
+    let v: number;
+    do {
+      x = randNorm();
+      v = 1 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * (x * x) * (x * x)) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
 }
 
-function standardNormalCDF(z: number): number {
-  const t = 1 / (1 + 0.2315419 * Math.abs(z));
-  const d = 0.3989423 * Math.exp((-z * z) / 2);
-  const p =
-    d *
-    t *
-    (0.3193815 +
-      t * (-0.3565638 + t * (1.7814779 + t * (-1.8212560 + t * 1.3302744))));
-  return z > 0 ? 1 - p : p;
+function randNorm(): number {
+  // Box-Muller
+  const u = 1 - Math.random();
+  const v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
+
+function sampleBeta(alpha: number, beta: number): number {
+  const x = sampleGamma(alpha);
+  const y = sampleGamma(beta);
+  return x / (x + y);
+}
+
+// ── Main export ──────────────────────────────────────────────────────────────
 
 export function computeStats(
   control: VariantStats,
@@ -52,54 +96,46 @@ export function computeStats(
       relativeLift,
       pValue: null,
       isSignificant: false,
+      probToBeatControl: null,
+      credibleIntervalLower: null,
+      credibleIntervalUpper: null,
     };
   }
 
-  const total = control.visitors + treatment.visitors;
-  const totalConversions = control.conversions + treatment.conversions;
-  const expectedControl = (control.visitors * totalConversions) / total;
-  const expectedTreatment = (treatment.visitors * totalConversions) / total;
-  const expectedControlNon =
-    (control.visitors * (total - totalConversions)) / total;
-  const expectedTreatmentNon =
-    (treatment.visitors * (total - totalConversions)) / total;
+  // Beta posteriors: Beta(1 + conversions, 1 + non-conversions)
+  const ctrlAlpha = 1 + control.conversions;
+  const ctrlBeta = 1 + (control.visitors - control.conversions);
+  const trtAlpha = 1 + treatment.conversions;
+  const trtBeta = 1 + (treatment.visitors - treatment.conversions);
 
-  if (
-    expectedControl === 0 ||
-    expectedTreatment === 0 ||
-    expectedControlNon === 0 ||
-    expectedTreatmentNon === 0
-  ) {
-    return {
-      controlConversionRate: controlRate,
-      treatmentConversionRate: treatmentRate,
-      relativeLift,
-      pValue: null,
-      isSignificant: false,
-    };
+  // Monte Carlo
+  let wins = 0;
+  const lifts: number[] = new Array(SAMPLES);
+
+  for (let i = 0; i < SAMPLES; i++) {
+    const c = sampleBeta(ctrlAlpha, ctrlBeta);
+    const t = sampleBeta(trtAlpha, trtBeta);
+    if (t > c) wins++;
+    lifts[i] = c > 0 ? (t - c) / c : 0;
   }
 
-  const chiSq =
-    Math.pow(control.conversions - expectedControl, 2) / expectedControl +
-    Math.pow(treatment.conversions - expectedTreatment, 2) / expectedTreatment +
-    Math.pow(
-      control.visitors - control.conversions - expectedControlNon,
-      2
-    ) /
-      expectedControlNon +
-    Math.pow(
-      treatment.visitors - treatment.conversions - expectedTreatmentNon,
-      2
-    ) /
-      expectedTreatmentNon;
+  const probToBeatControl = wins / SAMPLES;
 
-  const pValue = chiSquaredPValue(chiSq);
+  // 95% credible interval on relative lift
+  lifts.sort((a, b) => a - b);
+  const lo = Math.floor(0.025 * SAMPLES);
+  const hi = Math.floor(0.975 * SAMPLES);
+  const credibleIntervalLower = lifts[lo];
+  const credibleIntervalUpper = lifts[hi];
 
   return {
     controlConversionRate: controlRate,
     treatmentConversionRate: treatmentRate,
     relativeLift,
-    pValue,
-    isSignificant: pValue < 0.05,
+    pValue: null,
+    isSignificant: probToBeatControl >= SIGNIFICANCE_THRESHOLD,
+    probToBeatControl,
+    credibleIntervalLower,
+    credibleIntervalUpper,
   };
 }

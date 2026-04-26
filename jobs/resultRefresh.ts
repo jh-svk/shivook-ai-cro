@@ -1,6 +1,7 @@
 import { Queue, Worker, type Job } from "bullmq";
 import { connection, QUEUE_NAMES } from "../lib/queue";
 import { computeStats } from "../lib/stats";
+import { writeKnowledgeBaseEntry } from "../lib/knowledgeBase.server";
 import prisma from "../app/db.server";
 
 export interface ResultRefreshJobData {
@@ -96,50 +97,45 @@ async function processResultRefresh(experimentId: string) {
     treatmentAov < controlAov * (1 - AOV_GUARDRAIL_THRESHOLD);
   const guardrailStatus = aovTripped ? "aov_tripped" : "ok";
 
+  const resultData = {
+    computedAt: new Date(),
+    controlVisitors,
+    treatmentVisitors,
+    controlConversions,
+    treatmentConversions,
+    controlRevenue,
+    treatmentRevenue,
+    controlConversionRate: stats.controlConversionRate,
+    treatmentConversionRate: stats.treatmentConversionRate,
+    relativeLift: stats.relativeLift,
+    pValue: stats.pValue,
+    probToBeatControl: stats.probToBeatControl,
+    isSignificant: stats.isSignificant,
+    guardrailStatus,
+  };
+
   await prisma.result.upsert({
     where: { experimentId },
-    create: {
-      experimentId,
-      computedAt: new Date(),
-      controlVisitors,
-      treatmentVisitors,
-      controlConversions,
-      treatmentConversions,
-      controlRevenue,
-      treatmentRevenue,
-      controlConversionRate: stats.controlConversionRate,
-      treatmentConversionRate: stats.treatmentConversionRate,
-      relativeLift: stats.relativeLift,
-      pValue: stats.pValue,
-      isSignificant: stats.isSignificant,
-      guardrailStatus,
-    },
-    update: {
-      computedAt: new Date(),
-      controlVisitors,
-      treatmentVisitors,
-      controlConversions,
-      treatmentConversions,
-      controlRevenue,
-      treatmentRevenue,
-      controlConversionRate: stats.controlConversionRate,
-      treatmentConversionRate: stats.treatmentConversionRate,
-      relativeLift: stats.relativeLift,
-      pValue: stats.pValue,
-      isSignificant: stats.isSignificant,
-      guardrailStatus,
-    },
+    create: { experimentId, ...resultData },
+    update: resultData,
   });
 
-  // Auto-conclude the experiment if a guardrail tripped
-  if (aovTripped && experiment.status === "active") {
+  // Auto-conclude on guardrail trip or Bayesian decision (95% probability)
+  const shouldConclude =
+    experiment.status === "active" &&
+    (aovTripped || stats.probToBeatControl !== null && stats.probToBeatControl >= 0.95);
+
+  if (shouldConclude) {
+    const reason = aovTripped ? "AOV guardrail tripped" : "Bayesian 95% threshold reached";
     await prisma.experiment.update({
       where: { id: experimentId },
       data: { status: "concluded", concludedAt: new Date() },
     });
-    console.warn(
-      `[resultRefresh] experiment ${experimentId} concluded: AOV guardrail tripped`,
-      { controlAov, treatmentAov }
+    console.log(`[resultRefresh] experiment ${experimentId} concluded: ${reason}`);
+
+    // Write to knowledge base for future hypothesis generation
+    await writeKnowledgeBaseEntry(experimentId).catch((err) =>
+      console.error("[resultRefresh] knowledgeBase write failed", err)
     );
   }
 }
