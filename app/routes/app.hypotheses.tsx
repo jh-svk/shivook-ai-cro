@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useLoaderData, useNavigation } from "react-router";
+import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -104,6 +104,7 @@ function iceLabel(score: number): { label: string; tone: "success" | "warning" |
 
 export default function HypothesesPage() {
   const { hypotheses, latestReport } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
@@ -121,6 +122,25 @@ export default function HypothesesPage() {
       >
         All experiments
       </s-button>
+
+      {isSubmitting && (
+        <s-banner tone="info" heading="Pipeline started">
+          <s-paragraph>
+            Running data sync and research synthesis — new hypotheses will
+            appear in 1–3 minutes. You can leave this page.
+          </s-paragraph>
+        </s-banner>
+      )}
+      {!isSubmitting && actionData && "message" in actionData && (
+        <s-banner tone="success" heading="Pipeline queued" dismissible>
+          <s-paragraph>{(actionData as { message: string }).message}</s-paragraph>
+        </s-banner>
+      )}
+      {!isSubmitting && actionData && "error" in actionData && (
+        <s-banner tone="critical" heading="Error">
+          <s-paragraph>{(actionData as { error: string }).error}</s-paragraph>
+        </s-banner>
+      )}
 
       <s-section heading="AI Research Pipeline">
         <s-stack direction="block" gap="base">
