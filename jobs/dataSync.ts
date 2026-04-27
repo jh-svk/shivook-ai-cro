@@ -3,6 +3,7 @@ import { connection } from "../lib/queue";
 import { fetchGA4Snapshot, type GA4Config } from "../lib/connectors/ga4.server";
 import { fetchShopifyFunnelSnapshot } from "../lib/connectors/shopifyAdmin.server";
 import { fetchClaritySnapshot, type ClarityConfig } from "../lib/connectors/clarity.server";
+import { extractStoreBranding } from "../lib/brandExtractor.server";
 import prisma from "../app/db.server";
 
 export const DATA_SYNC_QUEUE = "data-sync";
@@ -81,6 +82,14 @@ async function runDataSync(shopId: string) {
     where: { id: shopId },
     data: { dataSnapshot: snapshot as object },
   });
+
+  // Refresh brand tokens from the active theme
+  const freshShop = await prisma.shop.findUnique({ where: { id: shopId } });
+  if (freshShop) {
+    await extractStoreBranding(freshShop).catch((err) =>
+      console.error(`[dataSync] brand extraction failed for ${shop.shopifyDomain}`, err)
+    );
+  }
 
   console.log(`[dataSync] completed for shop ${shop.shopifyDomain}`);
 }

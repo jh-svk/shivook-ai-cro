@@ -63,7 +63,7 @@
     return 'new';
   }
 
-  function buildContext() {
+  function buildContext(geoCountry) {
     return {
       deviceType:    detectDevice(),
       trafficSource: detectSource(),
@@ -71,7 +71,26 @@
       hour:          new Date().getHours(),
       dayOfWeek:     new Date().getDay(),
       cartState:     'any',
+      geoCountry:    geoCountry || 'XX',
     };
+  }
+
+  // Geo detection: fetch from app proxy with 1s timeout, cache 24h in localStorage
+  function detectGeoCountry() {
+    var cached    = lsGet('cro_geo_country');
+    var cachedAt  = parseInt(lsGet('cro_geo_country_at') || '0', 10);
+    if (cached && Date.now() - cachedAt < 86400000) {
+      return Promise.resolve(cached);
+    }
+    return Promise.race([
+      fetch(PROXY_BASE + '/api/geo').then(function (r) { return r.ok ? r.json() : { country: 'XX' }; }),
+      new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 1000); }),
+    ]).then(function (data) {
+      var code = (data && data.country) || 'XX';
+      lsSet('cro_geo_country', code);
+      lsSet('cro_geo_country_at', String(Date.now()));
+      return code;
+    }).catch(function () { return 'XX'; });
   }
 
   // Returns true if the visitor matches the segment (null segment = always match)
@@ -92,6 +111,9 @@
 
     if (segment.dayOfWeek && segment.dayOfWeek.length > 0 &&
         segment.dayOfWeek.indexOf(ctx.dayOfWeek) === -1) return false;
+
+    if (segment.geoCountry && segment.geoCountry.length > 0 &&
+        segment.geoCountry.indexOf(ctx.geoCountry) === -1) return false;
 
     // productCategory and cartState: stub — always match in Phase 3
     return true;
@@ -213,14 +235,16 @@
   var pageType  = root.dataset.pageType || '';
   var visitorId = getOrCreate(lsGet, lsSet, LS_VISITOR,  uuid4);
   var sessionId = getOrCreate(ssGet, ssSet, SS_SESSION,  uuid4);
-  var ctx       = buildContext();
 
-  fetch(
-    PROXY_BASE + '/api/experiments?pageType=' + encodeURIComponent(pageType),
-    { credentials: 'same-origin' }
-  )
-    .then(function (res) { return res.ok ? res.json() : null; })
-    .then(function (data) {
+  detectGeoCountry().then(function (geoCountry) {
+    var ctx = buildContext(geoCountry);
+
+    return fetch(
+      PROXY_BASE + '/api/experiments?pageType=' + encodeURIComponent(pageType),
+      { credentials: 'same-origin' }
+    )
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
       if (!data || !Array.isArray(data.experiments)) return;
 
       data.experiments.forEach(function (exp) {
@@ -247,8 +271,8 @@
           eventType:    'view',
         });
       });
-    })
-    .catch(function () {
-      // Never throw — storefront stability is non-negotiable
-    });
+      });
+  }).catch(function () {
+    // Never throw — storefront stability is non-negotiable
+  });
 })();

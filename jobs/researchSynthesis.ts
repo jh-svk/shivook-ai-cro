@@ -44,13 +44,34 @@ function buildDataPrompt(snapshot: Record<string, unknown>, pastTests: string): 
     ? `## Heatmap Data (Clarity)\n\`\`\`json\n${JSON.stringify(snapshot.clarity, null, 2)}\n\`\`\`\n\nInterpretation guidance:\n- High rage click count on a page signals user frustration — likely a broken element or confusing CTA\n- Low scroll depth on product pages signals poor content hierarchy — key info may be below the fold\n- High dead click count indicates broken UX expectations — elements that look clickable but aren't\n\n`
     : "## Heatmap Data (Clarity)\nNot connected.\n\n";
 
+  const ga4Snapshot = snapshot.ga4 as Record<string, unknown> | undefined;
+  const shopifySnapshot = snapshot.shopifyFunnel as Record<string, unknown> | undefined;
+
+  const segmentSection =
+    ga4Snapshot?.segmentBreakdown || shopifySnapshot?.topCountriesByRevenue
+      ? `## Segment performance breakdown
+
+### By device
+${ga4Snapshot?.segmentBreakdown ? JSON.stringify((ga4Snapshot.segmentBreakdown as Record<string, unknown>).device ?? {}, null, 2) : "No device data."}
+
+### By geography (top countries — GA4)
+${(ga4Snapshot?.segmentBreakdown as Record<string, unknown> | undefined)?.topCountries ? JSON.stringify((ga4Snapshot!.segmentBreakdown as Record<string, unknown>).topCountries, null, 2) : "No GA4 geo data."}
+
+### By geography (top countries — Shopify revenue)
+${shopifySnapshot?.topCountriesByRevenue ? JSON.stringify(shopifySnapshot.topCountriesByRevenue, null, 2) : "No Shopify geo data."}
+
+Analyse: which device type has the worst conversion rate? Which countries have high traffic but low conversion? Surface these as friction points. The hypothesis generator will use these to create segment-targeted tests.
+
+`
+      : "";
+
   return `## Store Data Snapshot (last 30 days)
 
 \`\`\`json
 ${JSON.stringify({ ...snapshot, clarity: undefined }, null, 2)}
 \`\`\`
 
-${claritySection}## Past Test History
+${claritySection}${segmentSection}## Past Test History
 ${pastTests || "No prior tests completed yet."}
 
 ---

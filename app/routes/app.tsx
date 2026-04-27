@@ -6,6 +6,7 @@ import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { authenticate } from "../shopify.server";
 import { findOrCreateShop } from "../../lib/shop.server";
 import { getSubscriptionStatus, getShopPlan } from "../../lib/planGate.server";
+import { extractStoreBranding } from "../../lib/brandExtractor.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -19,6 +20,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   try {
     const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
+
+    // Extract brand tokens on first install (fire-and-forget)
+    const guardrails = (shop.brandGuardrails as Record<string, unknown>) ?? {};
+    if (!guardrails.extractedAt) {
+      extractStoreBranding(shop).catch(() => {});
+    }
 
     // Redirect new installs to onboarding
     if (!shop.onboardingCompletedAt && !isOnboarding && !isBillingRoute) {

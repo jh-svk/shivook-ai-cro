@@ -24,6 +24,7 @@ export interface ShopifyFunnelSnapshot {
     reachedCheckout: number;
     purchased: number;
   };
+  topCountriesByRevenue?: Array<{ country: string; orderCount: number; revenue: number }>;
 }
 
 const ORDERS_QUERY = `
@@ -33,6 +34,7 @@ const ORDERS_QUERY = `
         node {
           id
           totalPriceSet { shopMoney { amount } }
+          billingAddress { countryCodeV2 }
           lineItems(first: 5) {
             edges {
               node {
@@ -117,6 +119,24 @@ export async function fetchShopifyFunnelSnapshot(
     .sort((a, b) => b.orders - a.orders)
     .slice(0, 10);
 
+  // Country breakdown from billing addresses
+  const countryMap = new Map<string, { orderCount: number; revenue: number }>();
+  for (const order of orders) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const billingCountry: string = (order as any).billingAddress?.countryCodeV2 ?? "";
+    if (!billingCountry) continue;
+    const rev = parseFloat(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (order as any).totalPriceSet?.shopMoney?.amount ?? "0"
+    );
+    const existing = countryMap.get(billingCountry) ?? { orderCount: 0, revenue: 0 };
+    countryMap.set(billingCountry, { orderCount: existing.orderCount + 1, revenue: existing.revenue + rev });
+  }
+  const topCountriesByRevenue = [...countryMap.entries()]
+    .map(([country, data]) => ({ country, ...data }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 10);
+
   return {
     period: "last_30_days",
     orders: orderCount,
@@ -124,8 +144,7 @@ export async function fetchShopifyFunnelSnapshot(
     aov,
     cartAbandonmentRate: null, // Shopify doesn't expose this directly via Admin API
     topProducts,
-    // Checkout funnel from our own events table would be richer — populated
-    // from the events table in the research synthesis job instead.
     checkoutFunnel: { addedToCart: 0, reachedCheckout: 0, purchased: orderCount },
+    topCountriesByRevenue,
   };
 }

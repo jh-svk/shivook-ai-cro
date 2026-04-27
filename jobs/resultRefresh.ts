@@ -68,6 +68,15 @@ async function processResultRefresh(experimentId: string) {
       .map((e) => e.visitorId)
   ).size;
 
+  // Add-to-cart events
+  const [controlAddToCartCount, treatmentAddToCartCount, controlCheckoutCount, treatmentCheckoutCount] =
+    await Promise.all([
+      prisma.event.count({ where: { experimentId, variantId: controlVariant.id, eventType: "add_to_cart" } }),
+      prisma.event.count({ where: { experimentId, variantId: treatmentVariant.id, eventType: "add_to_cart" } }),
+      prisma.event.count({ where: { experimentId, variantId: controlVariant.id, eventType: "checkout_started" } }),
+      prisma.event.count({ where: { experimentId, variantId: treatmentVariant.id, eventType: "checkout_started" } }),
+    ]);
+
   // Revenue totals (from purchase events regardless of targetMetric)
   const purchaseEvents = await prisma.event.findMany({
     where: { experimentId, eventType: "purchase" },
@@ -92,6 +101,25 @@ async function processResultRefresh(experimentId: string) {
   const controlAov = controlPurchases > 0 ? controlRevenue / controlPurchases : 0;
   const treatmentAov = treatmentPurchases > 0 ? treatmentRevenue / treatmentPurchases : 0;
 
+  // Derived funnel rates (guard divide-by-zero)
+  const controlAddToCartRate = controlVisitors > 0 ? controlAddToCartCount / controlVisitors : 0;
+  const treatmentAddToCartRate = treatmentVisitors > 0 ? treatmentAddToCartCount / treatmentVisitors : 0;
+  const controlCheckoutRate = controlVisitors > 0 ? controlCheckoutCount / controlVisitors : 0;
+  const treatmentCheckoutRate = treatmentVisitors > 0 ? treatmentCheckoutCount / treatmentVisitors : 0;
+  const controlRevPerVisitor = controlVisitors > 0 ? controlRevenue / controlVisitors : 0;
+  const treatmentRevPerVisitor = treatmentVisitors > 0 ? treatmentRevenue / treatmentVisitors : 0;
+
+  // Lift metrics (null when control is 0 to avoid meaningless ±∞)
+  const liftPct = (treatment: number, control: number) =>
+    control > 0 ? ((treatment - control) / control) * 100 : null;
+
+  const conversionRateLift = liftPct(stats.treatmentConversionRate, stats.controlConversionRate);
+  const addToCartRateLift = liftPct(treatmentAddToCartRate, controlAddToCartRate);
+  const checkoutRateLift = liftPct(treatmentCheckoutRate, controlCheckoutRate);
+  const revPerVisitorLift = liftPct(treatmentRevPerVisitor, controlRevPerVisitor);
+  const aovLift =
+    controlAov > 0 && treatmentAov > 0 ? liftPct(treatmentAov, controlAov) : null;
+
   const aovTripped =
     controlAov > 0 && treatmentAov > 0 &&
     treatmentAov < controlAov * (1 - AOV_GUARDRAIL_THRESHOLD);
@@ -112,6 +140,26 @@ async function processResultRefresh(experimentId: string) {
     probToBeatControl: stats.probToBeatControl,
     isSignificant: stats.isSignificant,
     guardrailStatus,
+    // Funnel metrics
+    controlAddToCartCount,
+    treatmentAddToCartCount,
+    controlAddToCartRate,
+    treatmentAddToCartRate,
+    controlCheckoutCount,
+    treatmentCheckoutCount,
+    controlCheckoutRate,
+    treatmentCheckoutRate,
+    // Revenue metrics
+    controlAov: controlAov > 0 ? controlAov : null,
+    treatmentAov: treatmentAov > 0 ? treatmentAov : null,
+    controlRevPerVisitor,
+    treatmentRevPerVisitor,
+    // Lift metrics
+    conversionRateLift,
+    addToCartRateLift,
+    checkoutRateLift,
+    revPerVisitorLift,
+    aovLift,
   };
 
   await prisma.result.upsert({

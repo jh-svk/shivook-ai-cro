@@ -46,6 +46,12 @@ type RawHypothesis = {
   iceConfidence: number;
   iceEase: number;
   reasoning: string;
+  recommendedSegment?: {
+    deviceType?: string | null;
+    geoCountry?: string[];
+    trafficSource?: string | null;
+    visitorType?: string | null;
+  } | null;
 };
 
 const SYSTEM_PROMPT = `You are a senior CRO strategist. Generate specific, testable A/B test hypotheses.
@@ -58,7 +64,9 @@ PLATFORM GUARDRAILS — you must respect these Shopify constraints:
 - Never suggest experiments requiring logged-in customer data (Storefront API not configured)
 - All variant code must run as async JS or CSS injection — no synchronous scripts
 - Experiments must target product pages, collection pages, cart page, or homepage only
-- Keep JS patches under 10kb — suggest lightweight DOM changes, not full component rewrites`;
+- Keep JS patches under 10kb — suggest lightweight DOM changes, not full component rewrites
+
+When segment data shows a specific device type or geography underperforming, target that segment in the recommendedSegment field. Set a field to null if the hypothesis applies broadly regardless of that dimension.`;
 
 function buildHypothesisPrompt(reportMd: string, pastTests: string): string {
   return `## Research Report
@@ -81,6 +89,7 @@ Return a JSON array. Each object must have these exact keys:
 - iceConfidence: integer 1-10
 - iceEase: integer 1-10
 - reasoning: string (1-2 sentences explaining the ICE scores)
+- recommendedSegment: { deviceType: "mobile"|"desktop"|"tablet"|null, geoCountry: string[], trafficSource: "paid"|"organic"|null, visitorType: "new"|"returning"|null } or null if broadly applicable
 
 Return ONLY the JSON array, no other text.`;
 }
@@ -149,6 +158,7 @@ async function runHypothesisGenerator(shopId: string, reportId: string) {
     iceEase: Math.min(10, Math.max(1, Math.round(h.iceEase))),
     iceScore: h.iceImpact * h.iceConfidence * h.iceEase,
     status: "backlog" as const,
+    recommendedSegment: h.recommendedSegment ?? undefined,
   }));
 
   await prisma.hypothesis.createMany({ data: rows });

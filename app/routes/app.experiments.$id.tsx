@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, redirect, useActionData, useLoaderData, useNavigation } from "react-router";
+import { useState } from "react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -73,6 +74,33 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const fd = await request.formData();
   const intent = String(fd.get("intent"));
 
+  if (intent === "delete") {
+    const experiment = await prisma.experiment.findUnique({
+      where: { id: params.id },
+      select: { status: true, shopId: true },
+    });
+    if (!experiment) return { error: "Experiment not found." };
+    if (experiment.status === "active") {
+      return { error: "End the test before deleting it." };
+    }
+    try {
+      await prisma.event.deleteMany({ where: { experimentId: params.id } });
+      await prisma.result.deleteMany({ where: { experimentId: params.id } });
+      try {
+        await prisma.orchestratorLog.deleteMany({
+          where: { payload: { path: ["experimentId"], equals: params.id } },
+        });
+      } catch { /* best-effort */ }
+      await prisma.variant.deleteMany({ where: { experimentId: params.id } });
+      await prisma.experiment.delete({ where: { id: params.id } });
+      throw redirect("/app");
+    } catch (error) {
+      if (error instanceof Response) throw error;
+      console.error("[experiments.$id] delete error", error);
+      return { error: "Failed to delete experiment." };
+    }
+  }
+
   if (intent === "activate") {
     const check = await canActivateExperiment(params.id!);
     if (!check.allowed) return { error: check.reason ?? "Cannot activate experiment." };
@@ -135,6 +163,38 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 };
 
+function LiftCell({ lift }: { lift: number | null }) {
+  if (lift === null) return <td style={{ textAlign: "right", padding: "4px 8px" }}>—</td>;
+  const color = lift > 0 ? "#1a7a4a" : lift < 0 ? "#d72c0d" : "#6d7175";
+  const sign = lift > 0 ? "+" : "";
+  return (
+    <td style={{ textAlign: "right", padding: "4px 8px", color, fontWeight: 500 }}>
+      {sign}{lift.toFixed(1)}%
+    </td>
+  );
+}
+
+function MetricRow({
+  label,
+  control,
+  treatment,
+  lift,
+}: {
+  label: string;
+  control: string;
+  treatment: string;
+  lift: number | null;
+}) {
+  return (
+    <tr>
+      <td style={{ padding: "4px 8px" }}>{label}</td>
+      <td style={{ textAlign: "right", padding: "4px 8px" }}>{control}</td>
+      <td style={{ textAlign: "right", padding: "4px 8px" }}>{treatment}</td>
+      <LiftCell lift={lift} />
+    </tr>
+  );
+}
+
 function CodePreview({ label, code }: { label: string; code: string }) {
   return (
     <s-box>
@@ -161,6 +221,7 @@ export default function ExperimentDetail() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const control = experiment.variants.find((v) => v.type === "control");
   const treatment = experiment.variants.find((v) => v.type === "treatment");
@@ -303,53 +364,108 @@ export default function ExperimentDetail() {
       <s-section heading="Results">
         {result ? (
           <s-stack direction="block" gap="base">
-            <s-stack direction="inline" gap="base">
-              <s-box padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="base">
-                  <s-heading>Control</s-heading>
-                  <s-text>
-                    {result.controlVisitors.toLocaleString()} visitors
-                  </s-text>
-                  <s-text>
-                    {(result.controlConversionRate * 100).toFixed(2)}% conv. rate
-                  </s-text>
-                </s-stack>
-              </s-box>
-              <s-box padding="base" borderWidth="base" borderRadius="base">
-                <s-stack direction="block" gap="base">
-                  <s-heading>Treatment</s-heading>
-                  <s-text>
-                    {result.treatmentVisitors.toLocaleString()} visitors
-                  </s-text>
-                  <s-text>
-                    {(result.treatmentConversionRate * 100).toFixed(2)}% conv. rate
-                  </s-text>
-                </s-stack>
-              </s-box>
-            </s-stack>
-            {result.relativeLift != null && (
+            {result.probToBeatControl != null && (
               <s-stack direction="inline" gap="base">
-                <s-text>
-                  Lift: {(result.relativeLift * 100).toFixed(1)}%
-                </s-text>
-                {result.probToBeatControl != null ? (
-                  <s-text>
-                    Probability to beat control:{" "}
-                    {(result.probToBeatControl * 100).toFixed(1)}%
-                  </s-text>
-                ) : null}
                 <s-badge tone={result.isSignificant ? "success" : "info"}>
-                  {result.isSignificant
-                    ? "Winner — 95% confidence"
-                    : "Not yet significant"}
+                  {result.isSignificant ? "Winner — 95% confidence" : "Not yet significant"}
                 </s-badge>
+                <s-text>
+                  P(beat control): {(result.probToBeatControl * 100).toFixed(1)}%
+                </s-text>
               </s-stack>
+            )}
+
+            {/* Conversion funnel panel */}
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small">
+                <s-heading>Conversion funnel</s-heading>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Metric</th>
+                      <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Control</th>
+                      <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Treatment</th>
+                      <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Lift</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <MetricRow
+                      label="Views"
+                      control={result.controlVisitors.toLocaleString()}
+                      treatment={result.treatmentVisitors.toLocaleString()}
+                      lift={null}
+                    />
+                    {result.controlAddToCartRate != null && (
+                      <MetricRow
+                        label="Add to cart rate"
+                        control={`${(result.controlAddToCartRate * 100).toFixed(2)}%`}
+                        treatment={`${((result.treatmentAddToCartRate ?? 0) * 100).toFixed(2)}%`}
+                        lift={result.addToCartRateLift ?? null}
+                      />
+                    )}
+                    {result.controlCheckoutRate != null && (
+                      <MetricRow
+                        label="Checkout rate"
+                        control={`${(result.controlCheckoutRate * 100).toFixed(2)}%`}
+                        treatment={`${((result.treatmentCheckoutRate ?? 0) * 100).toFixed(2)}%`}
+                        lift={result.checkoutRateLift ?? null}
+                      />
+                    )}
+                    <MetricRow
+                      label="Conversion rate"
+                      control={`${(result.controlConversionRate * 100).toFixed(2)}%`}
+                      treatment={`${(result.treatmentConversionRate * 100).toFixed(2)}%`}
+                      lift={result.conversionRateLift ?? null}
+                    />
+                  </tbody>
+                </table>
+              </s-stack>
+            </s-box>
+
+            {/* Revenue panel — only show when revenue data exists */}
+            {(result.controlRevenue > 0 || result.treatmentRevenue > 0) && (
+              <s-box padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small">
+                  <s-heading>Revenue</s-heading>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Metric</th>
+                        <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Control</th>
+                        <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Treatment</th>
+                        <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Lift</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <MetricRow
+                        label="Revenue per visitor"
+                        control={`$${(result.controlRevPerVisitor ?? 0).toFixed(2)}`}
+                        treatment={`$${(result.treatmentRevPerVisitor ?? 0).toFixed(2)}`}
+                        lift={result.revPerVisitorLift ?? null}
+                      />
+                      {result.controlAov != null && (
+                        <MetricRow
+                          label="Avg order value"
+                          control={`$${result.controlAov.toFixed(2)}`}
+                          treatment={`$${(result.treatmentAov ?? 0).toFixed(2)}`}
+                          lift={result.aovLift ?? null}
+                        />
+                      )}
+                      <MetricRow
+                        label="Total revenue"
+                        control={`$${result.controlRevenue.toFixed(0)}`}
+                        treatment={`$${result.treatmentRevenue.toFixed(0)}`}
+                        lift={null}
+                      />
+                    </tbody>
+                  </table>
+                </s-stack>
+              </s-box>
             )}
           </s-stack>
         ) : (
           <s-paragraph>
-            No results yet. Results are computed hourly once the experiment is
-            active.
+            No results yet. Results are computed hourly once the experiment is active.
           </s-paragraph>
         )}
       </s-section>
@@ -399,11 +515,11 @@ export default function ExperimentDetail() {
                       >
                         Preview on storefront ↗
                       </s-button>
-                      <s-text tone="subdued">
+                      <s-text tone="neutral">
                         Opens your storefront in a new tab with this variant applied. No effect on live traffic or results.
                       </s-text>
                       {experiment.pageType !== "homepage" && experiment.pageType !== "any" && (
-                        <s-text tone="subdued">
+                        <s-text tone="neutral">
                           Navigate to a {experiment.pageType} page to see the variant in context.
                         </s-text>
                       )}
@@ -414,6 +530,43 @@ export default function ExperimentDetail() {
             ))}
         </s-stack>
       </s-section>
+
+      {/* Delete zone — not shown for active experiments */}
+      {experiment.status !== "active" && (
+        <s-section heading="Danger zone">
+          <s-stack direction="block" gap="base">
+            {!showDeleteConfirm ? (
+              <s-button
+                type="button"
+                tone="critical"
+                variant="secondary"
+                onClick={() => setShowDeleteConfirm(true)}
+              >
+                Delete experiment
+              </s-button>
+            ) : (
+              <s-box padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="base">
+                  <s-text>
+                    This will permanently delete the experiment and all its data. This cannot be undone.
+                  </s-text>
+                  <s-stack direction="inline" gap="base">
+                    <Form method="post">
+                      <input type="hidden" name="intent" value="delete" />
+                      <s-button type="submit" tone="critical" variant="primary" {...(isSubmitting ? { loading: true } : {})}>
+                        Permanently delete
+                      </s-button>
+                    </Form>
+                    <s-button type="button" variant="secondary" onClick={() => setShowDeleteConfirm(false)}>
+                      Cancel
+                    </s-button>
+                  </s-stack>
+                </s-stack>
+              </s-box>
+            )}
+          </s-stack>
+        </s-section>
+      )}
 
       <s-section slot="aside" heading="Details">
         <s-stack direction="block" gap="base">

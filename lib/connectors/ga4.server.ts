@@ -19,6 +19,17 @@ export interface GA4Config {
   serviceAccountKey: string;   // base64-encoded service account JSON
 }
 
+export interface DeviceMetrics {
+  sessions: number;
+  conversionRate: number;
+  bounceRate: number;
+}
+
+export interface SegmentBreakdown {
+  device: { mobile: DeviceMetrics; tablet: DeviceMetrics; desktop: DeviceMetrics };
+  topCountries: Array<{ country: string; sessions: number; conversionRate: number; revenue: number }>;
+}
+
 export interface GA4Snapshot {
   period: string;              // "last_30_days"
   sessions: number;
@@ -28,6 +39,7 @@ export interface GA4Snapshot {
   topLandingPages: Array<{ page: string; sessions: number; bounceRate: number }>;
   deviceBreakdown: Array<{ device: string; sessions: number; pct: number }>;
   sourceBreakdown: Array<{ source: string; sessions: number; pct: number }>;
+  segmentBreakdown?: SegmentBreakdown;
 }
 
 async function getAccessToken(serviceAccountKeyB64: string): Promise<string> {
@@ -159,6 +171,83 @@ export async function fetchGA4Snapshot(config: GA4Config): Promise<GA4Snapshot> 
     return { source: cell(r, 0), sessions: s, pct: s / sourceTotal };
   });
 
+  // Segment breakdown: device + country dimensions
+  let segmentBreakdown: SegmentBreakdown | undefined;
+  try {
+    const segRaw = (await runReport(config.propertyId, token, {
+      dateRanges: dateRange,
+      dimensions: [{ name: "deviceCategory" }, { name: "country" }],
+      metrics: [
+        { name: "sessions" },
+        { name: "conversions" },
+        { name: "bounceRate" },
+        { name: "totalRevenue" },
+      ],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 50,
+    })) as { rows?: unknown[] };
+
+    const segRows = (segRaw.rows ?? []) as unknown[];
+
+    // Aggregate by device
+    const deviceMap: Record<string, { sessions: number; conversions: number; bounceSum: number; rows: number }> = {};
+    const countryMap: Record<string, { sessions: number; conversions: number; revenue: number }> = {};
+
+    for (const row of segRows) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = row as any;
+      const device = (r?.dimensionValues?.[0]?.value ?? "").toLowerCase();
+      const country = r?.dimensionValues?.[1]?.value ?? "";
+      const rowSessions = parseInt(r?.metricValues?.[0]?.value ?? "0");
+      const rowConversions = parseInt(r?.metricValues?.[1]?.value ?? "0");
+      const rowBounce = parseFloat(r?.metricValues?.[2]?.value ?? "0");
+      const rowRevenue = parseFloat(r?.metricValues?.[3]?.value ?? "0");
+
+      if (!deviceMap[device]) deviceMap[device] = { sessions: 0, conversions: 0, bounceSum: 0, rows: 0 };
+      deviceMap[device].sessions += rowSessions;
+      deviceMap[device].conversions += rowConversions;
+      deviceMap[device].bounceSum += rowBounce;
+      deviceMap[device].rows += 1;
+
+      if (country && country !== "(not set)") {
+        if (!countryMap[country]) countryMap[country] = { sessions: 0, conversions: 0, revenue: 0 };
+        countryMap[country].sessions += rowSessions;
+        countryMap[country].conversions += rowConversions;
+        countryMap[country].revenue += rowRevenue;
+      }
+    }
+
+    const toDeviceMetrics = (d: string): DeviceMetrics => {
+      const m = deviceMap[d] ?? { sessions: 0, conversions: 0, bounceSum: 0, rows: 1 };
+      return {
+        sessions: m.sessions,
+        conversionRate: m.sessions > 0 ? m.conversions / m.sessions : 0,
+        bounceRate: m.rows > 0 ? m.bounceSum / m.rows : 0,
+      };
+    };
+
+    const topCountries = Object.entries(countryMap)
+      .map(([country, m]) => ({
+        country,
+        sessions: m.sessions,
+        conversionRate: m.sessions > 0 ? m.conversions / m.sessions : 0,
+        revenue: m.revenue,
+      }))
+      .sort((a, b) => b.sessions - a.sessions)
+      .slice(0, 10);
+
+    segmentBreakdown = {
+      device: {
+        mobile: toDeviceMetrics("mobile"),
+        tablet: toDeviceMetrics("tablet"),
+        desktop: toDeviceMetrics("desktop"),
+      },
+      topCountries,
+    };
+  } catch (err) {
+    console.warn("[ga4] segment breakdown failed:", err);
+  }
+
   return {
     period: "last_30_days",
     sessions,
@@ -168,5 +257,6 @@ export async function fetchGA4Snapshot(config: GA4Config): Promise<GA4Snapshot> 
     topLandingPages,
     deviceBreakdown,
     sourceBreakdown,
+    segmentBreakdown,
   };
 }

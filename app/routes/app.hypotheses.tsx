@@ -212,6 +212,26 @@ export default function HypothesesPage() {
                       <s-badge>{h.pageType}</s-badge>
                       <s-badge>{h.elementType}</s-badge>
                     </s-stack>
+                    {h.recommendedSegment && (() => {
+                      const seg = h.recommendedSegment as {
+                        deviceType?: string | null;
+                        geoCountry?: string[];
+                        trafficSource?: string | null;
+                        visitorType?: string | null;
+                      };
+                      const tags: string[] = [];
+                      if (seg.deviceType) tags.push(seg.deviceType.charAt(0).toUpperCase() + seg.deviceType.slice(1));
+                      if (seg.geoCountry?.length) tags.push(seg.geoCountry.join(", "));
+                      if (seg.trafficSource) tags.push(seg.trafficSource + " traffic");
+                      if (seg.visitorType) tags.push(seg.visitorType + " visitors");
+                      if (tags.length === 0) return null;
+                      return (
+                        <s-stack direction="inline" gap="small">
+                          <s-text tone="neutral">Target:</s-text>
+                          {tags.map((t, i) => <s-badge key={i} tone="info">{t}</s-badge>)}
+                        </s-stack>
+                      );
+                    })()}
                     <s-paragraph>{h.hypothesis}</s-paragraph>
                     <s-stack direction="inline" gap="base">
                       <s-text>

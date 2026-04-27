@@ -1,5 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { Form, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -105,6 +105,7 @@ export default function ExperimentsIndex() {
               <s-table-header format="numeric">Control conv.</s-table-header>
               <s-table-header format="numeric">Treatment conv.</s-table-header>
               <s-table-header format="numeric">Lift</s-table-header>
+              <s-table-header></s-table-header>
             </s-table-header-row>
             <s-table-body>
               {experiments.map((exp) => (
@@ -142,6 +143,24 @@ export default function ExperimentsIndex() {
                     {exp.result?.relativeLift != null
                       ? `${(exp.result.relativeLift * 100).toFixed(1)}%`
                       : "—"}
+                  </s-table-cell>
+                  <s-table-cell>
+                    {(exp.status === "draft" || exp.status === "concluded") && (
+                      <Form
+                        method="post"
+                        action={`/app/experiments/${exp.id}`}
+                        onSubmit={(e) => {
+                          if (!window.confirm("Permanently delete this experiment and all its data?")) {
+                            e.preventDefault();
+                          }
+                        }}
+                      >
+                        <input type="hidden" name="intent" value="delete" />
+                        <s-button type="submit" tone="critical" variant="tertiary">
+                          Delete
+                        </s-button>
+                      </Form>
+                    )}
                   </s-table-cell>
                 </s-table-row>
               ))}

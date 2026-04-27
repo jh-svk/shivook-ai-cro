@@ -153,6 +153,32 @@ model Result {
   guardrailStatus         String     @default("ok")
   decision                String?
   decisionMadeAt          DateTime?
+
+  // Add-to-cart funnel
+  controlAddToCartCount   Int?
+  treatmentAddToCartCount Int?
+  controlAddToCartRate    Float?
+  treatmentAddToCartRate  Float?
+
+  // Checkout initiated funnel
+  controlCheckoutCount    Int?
+  treatmentCheckoutCount  Int?
+  controlCheckoutRate     Float?
+  treatmentCheckoutRate   Float?
+
+  // Revenue metrics
+  controlAov              Float?
+  treatmentAov            Float?
+  controlRevPerVisitor    Float?
+  treatmentRevPerVisitor  Float?
+
+  // Lift metrics
+  conversionRateLift      Float?
+  addToCartRateLift       Float?
+  checkoutRateLift        Float?
+  revPerVisitorLift       Float?
+  aovLift                 Float?
+
   experiment              Experiment @relation(fields: [experimentId], references: [id])
 
   @@map("results")
@@ -200,7 +226,8 @@ model Hypothesis {
   iceConfidence        Int             // 1-10
   iceEase              Int             // 1-10
   iceScore             Float           // impact * confidence * ease
-  status               String          @default("backlog") // backlog | promoted | rejected
+  status               String          @default("backlog") // backlog | promoted | rejected | qa_failed
+  recommendedSegment   Json?           // { deviceType, geoCountry, trafficSource, visitorType }
   promotedExperimentId String?
   createdAt            DateTime        @default(now())
   shop                 Shop            @relation(fields: [shopId], references: [id])

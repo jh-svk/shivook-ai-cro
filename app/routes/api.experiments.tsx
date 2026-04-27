@@ -42,6 +42,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         segment: {
           select: {
             deviceType: true,
+            geoCountry: true,
             trafficSource: true,
             visitorType: true,
             timeOfDayFrom: true,

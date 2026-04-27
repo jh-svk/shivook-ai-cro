@@ -66,6 +66,19 @@ function buildUserPrompt(
   jsPatch: string | null,
   brandGuardrails: unknown
 ): string {
+  const guardrails = (brandGuardrails as Record<string, unknown>) ?? {};
+  const hasExtractedTokens =
+    guardrails.colors != null && typeof guardrails.colors === "object";
+
+  const brandComplianceBlock = hasExtractedTokens
+    ? `\n## Brand compliance check
+The store has extracted brand tokens. When reviewing htmlPatch and cssPatch:
+- Extract all hex color values from the code. Flag any that are NOT in: ${JSON.stringify(guardrails.colors)} (allow ±15% lightness variation for hover states).
+- Flag any font-family values not in: ${JSON.stringify(guardrails.fonts ?? {})}.
+- If there are MORE than 2 violations, treat them as a REJECT criterion.
+- If there are 1–2 minor violations, add them to "concerns" instead.`
+    : "";
+
   return `Review this auto-generated A/B test variant:
 
 ## Hypothesis
@@ -82,7 +95,8 @@ CSS patch: ${cssPatch ?? "(none)"}
 JS patch: ${jsPatch ?? "(none)"}
 
 ## Brand guardrails
-${JSON.stringify(brandGuardrails ?? {}, null, 2)}
+${JSON.stringify(guardrails, null, 2)}
+${brandComplianceBlock}
 
 ${PLATFORM_CONSTRAINTS}
 

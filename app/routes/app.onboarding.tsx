@@ -13,7 +13,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const step = parseInt(url.searchParams.get("step") ?? "1", 10);
 
-  return { shopDomain: shop.shopifyDomain, step: Math.min(Math.max(step, 1), 5) };
+  return {
+    shopDomain: shop.shopifyDomain,
+    step: Math.min(Math.max(step, 1), 5),
+    brandGuardrails: (shop.brandGuardrails as Record<string, unknown>) ?? null,
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -80,7 +84,8 @@ const GUARDRAIL_DEFAULT = JSON.stringify(
 );
 
 export default function Onboarding() {
-  const { shopDomain, step } = useLoaderData<typeof loader>();
+  const { shopDomain, step, brandGuardrails } = useLoaderData<typeof loader>();
+  const hasExtractedBrand = Boolean(brandGuardrails?.extractedAt);
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
@@ -142,14 +147,27 @@ export default function Onboarding() {
       {step === 3 && (
         <s-section heading="Brand guardrails (optional)">
           <s-stack direction="block" gap="base">
-            <s-paragraph>
-              The AI uses these guardrails to keep generated variants on-brand. You can edit this anytime in Settings.
-            </s-paragraph>
+            {hasExtractedBrand ? (
+              <s-banner tone="success" heading="Brand settings auto-detected">
+                <s-paragraph>
+                  We automatically extracted your theme's brand settings. Review and adjust below.
+                </s-paragraph>
+              </s-banner>
+            ) : (
+              <s-paragraph>
+                The AI uses these guardrails to keep generated variants on-brand. You can edit this anytime in Settings.
+              </s-paragraph>
+            )}
             <Form method="post">
               <input type="hidden" name="step" value="3" />
               <input type="hidden" name="intent" value="next" />
               <s-stack direction="block" gap="base">
-                <s-text-area name="brandGuardrails" label="Brand guardrails (JSON)" value={GUARDRAIL_DEFAULT} rows={8} />
+                <s-text-area
+                  name="brandGuardrails"
+                  label="Brand guardrails (JSON)"
+                  value={hasExtractedBrand ? JSON.stringify(brandGuardrails, null, 2) : GUARDRAIL_DEFAULT}
+                  rows={8}
+                />
                 <s-button type="submit" variant="primary" {...(isSubmitting ? { loading: true } : {})}>
                   Save and continue
                 </s-button>

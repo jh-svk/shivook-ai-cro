@@ -58,6 +58,23 @@ function buildUserPrompt(
   targetMetric: string,
   brandGuardrails: unknown
 ): string {
+  const guardrails = (brandGuardrails as Record<string, unknown>) ?? {};
+  const hasExtractedTokens =
+    guardrails.colors != null && typeof guardrails.colors === "object";
+
+  const brandBlock = hasExtractedTokens
+    ? `## Brand constraints (MUST follow — non-negotiable)
+These are extracted directly from the store's live theme. Your generated code MUST:
+- Use ONLY these colors (no other hex values or named colors): ${JSON.stringify(guardrails.colors)}
+- Use ONLY these font families: ${JSON.stringify(guardrails.fonts ?? {})}
+- Match border radius: ${guardrails.borderRadius ?? "as-is"}
+- Never introduce inline styles that conflict with the above
+- If a patch requires a color not in this list, use the closest listed color instead
+
+Brand tokens:
+${JSON.stringify(guardrails, null, 2)}`
+    : `Brand guardrails: ${JSON.stringify(guardrails)}`;
+
   return `Generate variant patches for this A/B test hypothesis:
 
 Title: ${title}
@@ -65,7 +82,8 @@ Hypothesis: ${hypothesis}
 Page type: ${pageType}
 Element type: ${elementType}
 Target metric: ${targetMetric}
-Brand guardrails: ${JSON.stringify(brandGuardrails ?? {})}
+
+${brandBlock}
 
 Return JSON with: htmlPatch, cssPatch, jsPatch, variantDescription.`;
 }
@@ -94,6 +112,48 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
     include: { shop: { select: { brandGuardrails: true } } },
   });
   if (!hypothesis) throw new Error(`Hypothesis ${hypothesisId} not found`);
+
+  // Resolve segment from recommendedSegment before generating code
+  type RecommendedSeg = {
+    deviceType?: string | null;
+    geoCountry?: string[];
+    trafficSource?: string | null;
+    visitorType?: string | null;
+  };
+  const recSeg = hypothesis.recommendedSegment as RecommendedSeg | null;
+  let resolvedSegmentId: string | undefined;
+
+  if (recSeg && (recSeg.deviceType || recSeg.geoCountry?.length || recSeg.trafficSource || recSeg.visitorType)) {
+    // Look for an existing segment matching these dimensions
+    const shopSegments = await prisma.segment.findMany({ where: { shopId } });
+    const match = shopSegments.find(
+      (s) =>
+        s.deviceType === (recSeg.deviceType ?? null) &&
+        s.trafficSource === (recSeg.trafficSource ?? null) &&
+        s.visitorType === (recSeg.visitorType ?? null) &&
+        JSON.stringify([...(recSeg.geoCountry ?? [])].sort()) ===
+          JSON.stringify([...s.geoCountry].sort())
+    );
+
+    if (match) {
+      resolvedSegmentId = match.id;
+    } else {
+      const segName = `AI: ${hypothesis.title} — ${recSeg.deviceType ?? "all devices"}`.slice(0, 80);
+      const created = await prisma.segment.create({
+        data: {
+          shopId,
+          name: segName,
+          deviceType: recSeg.deviceType ?? null,
+          geoCountry: recSeg.geoCountry ?? [],
+          trafficSource: recSeg.trafficSource ?? null,
+          visitorType: recSeg.visitorType ?? null,
+          dayOfWeek: [],
+          productCategory: [],
+        },
+      });
+      resolvedSegmentId = created.id;
+    }
+  }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
@@ -154,6 +214,7 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
   const experiment = await prisma.experiment.create({
     data: {
       shopId,
+      segmentId: resolvedSegmentId,
       name: hypothesis.title,
       hypothesis: hypothesis.hypothesis,
       pageType: hypothesis.pageType,
