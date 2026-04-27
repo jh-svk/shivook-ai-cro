@@ -11,6 +11,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import { connection } from "../lib/queue";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
+import { fetchPlatformInsights } from "../lib/knowledgeBase.server";
 import { hypothesisGeneratorQueue } from "./hypothesisGenerator";
 
 export const RESEARCH_SYNTHESIS_QUEUE = "research-synthesis";
@@ -84,12 +85,18 @@ async function synthesise(shopId: string): Promise<string> {
     )
     .join("\n");
 
+  const platformInsights = await fetchPlatformInsights();
+  const userPrompt = buildDataPrompt(dataSnapshot, pastTests) +
+    (platformInsights
+      ? `\n\n${platformInsights}\n\nUse these platform-wide patterns to strengthen your friction point analysis. If a pattern consistently underperforms across all stores, note it as lower priority. If a pattern consistently wins, flag it as high confidence even with limited local data.`
+      : "");
+
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
     system: buildSystemPrompt(shop.shopifyDomain),
-    messages: [{ role: "user", content: buildDataPrompt(dataSnapshot, pastTests) }],
+    messages: [{ role: "user", content: userPrompt }],
   });
 
   const content = response.content[0];

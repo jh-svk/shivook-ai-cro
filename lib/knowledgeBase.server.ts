@@ -67,6 +67,105 @@ export async function writeKnowledgeBaseEntry(experimentId: string): Promise<voi
   console.log(`[knowledgeBase] wrote entry for experiment ${experimentId}: ${resultLabel}`);
 }
 
+export async function writePlatformLearning(experiment: {
+  pageType: string;
+  elementType: string;
+  targetMetric: string;
+  hypothesis: string;
+  result: {
+    controlVisitors: number;
+    treatmentVisitors: number;
+    controlConversionRate: number;
+    treatmentConversionRate: number;
+    probToBeatControl: number | null;
+  };
+  daysRunning: number;
+  segment?: { deviceType?: string | null } | null;
+}): Promise<void> {
+  const totalVisitors = experiment.result.controlVisitors + experiment.result.treatmentVisitors;
+  if (totalVisitors < 100) return;
+
+  const prob = experiment.result.probToBeatControl ?? 0.5;
+  const resultLabel =
+    prob >= 0.95 ? "winner" :
+    prob <= 0.05 ? "loser" :
+    "inconclusive";
+
+  const controlRate = experiment.result.controlConversionRate;
+  const treatmentRate = experiment.result.treatmentConversionRate;
+  const relativeLift = controlRate > 0
+    ? ((treatmentRate - controlRate) / controlRate) * 100
+    : null;
+
+  await prisma.platformLearning.create({
+    data: {
+      pageType:          experiment.pageType,
+      elementType:       experiment.elementType,
+      targetMetric:      experiment.targetMetric,
+      hypothesisSummary: experiment.hypothesis.slice(0, 300),
+      result:            resultLabel,
+      relativeLift:      relativeLift ?? undefined,
+      probToBeatControl: experiment.result.probToBeatControl ?? undefined,
+      visitorCount:      totalVisitors,
+      daysRunning:       experiment.daysRunning,
+      deviceType:        experiment.segment?.deviceType ?? undefined,
+    },
+  });
+
+  console.log(`[platformLearning] wrote entry: ${resultLabel} / ${experiment.pageType}/${experiment.elementType}`);
+}
+
+export async function fetchPlatformInsights(filters?: {
+  pageType?: string;
+  elementType?: string;
+}): Promise<string> {
+  const total = await prisma.platformLearning.count();
+  if (total === 0) return "";
+
+  const winners = await prisma.platformLearning.groupBy({
+    by: ["pageType", "elementType"],
+    _count: { id: true },
+    _avg: { relativeLift: true },
+    where: { result: "winner", ...filters },
+    having: { id: { _count: { gte: 3 } } },
+    orderBy: { _avg: { relativeLift: "desc" } },
+    take: 5,
+  });
+
+  const losers = await prisma.platformLearning.groupBy({
+    by: ["pageType", "elementType"],
+    _count: { id: true },
+    _avg: { relativeLift: true },
+    where: { result: "loser", ...filters },
+    having: { id: { _count: { gte: 3 } } },
+    orderBy: { _avg: { relativeLift: "asc" } },
+    take: 3,
+  });
+
+  const lines: string[] = [
+    `## Platform-wide CRO insights (${total} experiments across all stores)\n`,
+  ];
+
+  if (winners.length > 0) {
+    lines.push("### Consistently high-performing test types:");
+    for (const w of winners) {
+      const lift = w._avg.relativeLift?.toFixed(1) ?? "?";
+      lines.push(`- ${w.pageType}/${w.elementType}: ${w._count.id} tests, avg +${lift}% lift`);
+    }
+  }
+
+  if (losers.length > 0) {
+    lines.push("\n### Consistently underperforming test types:");
+    for (const l of losers) {
+      const lift = l._avg.relativeLift?.toFixed(1) ?? "?";
+      lines.push(`- ${l.pageType}/${l.elementType}: ${l._count.id} tests, avg ${lift}% lift`);
+    }
+  }
+
+  lines.push(`\nTotal platform experiments: ${total}`);
+  return lines.join("\n");
+}
+
 export async function searchKnowledgeBase(
   shopId: string,
   query: string,

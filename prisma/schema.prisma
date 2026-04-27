@@ -251,6 +251,25 @@ model OrchestratorLog {
   @@map("orchestrator_log")
 }
 
+model PlatformLearning {
+  id                String   @id @default(uuid())
+  pageType          String
+  elementType       String
+  targetMetric      String
+  hypothesisSummary String
+  result            String   // winner | loser | inconclusive
+  relativeLift      Float?
+  probToBeatControl Float?
+  visitorCount      Int
+  daysRunning       Int
+  deviceType        String?
+  createdAt         DateTime @default(now())
+
+  @@index([pageType, elementType])
+  @@index([result])
+  @@map("platform_learnings")
+}
+
 model KnowledgeBase {
   id                 String     @id @default(uuid())
   shopId             String

@@ -136,6 +136,29 @@
 
 ---
 
+## Phase 5 tables
+
+### platform_learnings
+Anonymised, cross-store CRO experiment outcomes. No shopId — platform-wide aggregate.
+Only written when totalVisitors >= 100 (statistically meaningful experiments only).
+Powers research synthesis and hypothesis generator with cross-store priors.
+
+- id: String @id @default(uuid())
+- pageType: String
+- elementType: String
+- targetMetric: String
+- hypothesisSummary: String (hypothesis text truncated at 300 chars — generic format already anonymises brand language)
+- result: String (winner | loser | inconclusive — Bayesian: prob>=0.95 winner, <=0.05 loser)
+- relativeLift: Float? (% relative lift, positive or negative)
+- probToBeatControl: Float? (Bayesian probability)
+- visitorCount: Int (total across both variants)
+- daysRunning: Int
+- deviceType: String? (from segment, if experiment was segmented)
+- createdAt: DateTime @default(now())
+- Index on (pageType, elementType), (result)
+
+---
+
 ## Phase 3 tables
 
 ### segments

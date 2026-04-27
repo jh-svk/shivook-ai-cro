@@ -12,6 +12,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import { connection } from "../lib/queue";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
+import { fetchPlatformInsights } from "../lib/knowledgeBase.server";
 
 export const HYPOTHESIS_GENERATOR_QUEUE = "hypothesis-generator";
 
@@ -105,6 +106,12 @@ async function generateHypotheses(
     .map((e) => `- ${e.pageType}/${e.elementType}: "${e.hypothesisText}" → ${e.result}`)
     .join("\n");
 
+  const platformInsights = await fetchPlatformInsights();
+  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests) +
+    (platformInsights
+      ? `\n\n${platformInsights}\n\nWhen scoring ICE, use these platform patterns to calibrate Confidence scores. High-performing patterns on the platform should get higher Confidence. Consistent losers should get lower Confidence even if they seem logical locally.`
+      : "");
+
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
@@ -113,7 +120,7 @@ async function generateHypotheses(
     messages: [
       {
         role: "user",
-        content: buildHypothesisPrompt(report.reportMd, pastTests),
+        content: userPrompt,
       },
     ],
   });

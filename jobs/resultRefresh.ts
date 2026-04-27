@@ -1,7 +1,7 @@
 import { Queue, Worker, type Job } from "bullmq";
 import { connection, QUEUE_NAMES } from "../lib/queue";
 import { computeStats } from "../lib/stats";
-import { writeKnowledgeBaseEntry } from "../lib/knowledgeBase.server";
+import { writeKnowledgeBaseEntry, writePlatformLearning } from "../lib/knowledgeBase.server";
 import prisma from "../app/db.server";
 
 export interface ResultRefreshJobData {
@@ -24,7 +24,7 @@ const AOV_GUARDRAIL_THRESHOLD = 0.03;
 async function processResultRefresh(experimentId: string) {
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
-    include: { variants: true },
+    include: { variants: true, segment: { select: { deviceType: true } } },
   });
 
   if (!experiment || experiment.status === "concluded") return;
@@ -136,6 +136,19 @@ async function processResultRefresh(experimentId: string) {
     await writeKnowledgeBaseEntry(experimentId).catch((err) =>
       console.error("[resultRefresh] knowledgeBase write failed", err)
     );
+
+    const daysRunning = experiment.startedAt
+      ? Math.max(1, Math.ceil((Date.now() - experiment.startedAt.getTime()) / (1000 * 60 * 60 * 24)))
+      : 1;
+    await writePlatformLearning({
+      pageType:    experiment.pageType,
+      elementType: experiment.elementType,
+      targetMetric: experiment.targetMetric,
+      hypothesis:  experiment.hypothesis,
+      result:      resultData,
+      daysRunning,
+      segment:     experiment.segment,
+    }).catch((err) => console.error("[resultRefresh] platformLearning write failed", err));
 
     // Slack notification
     const shopRecord = await prisma.shop.findUnique({
