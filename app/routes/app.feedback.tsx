@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData, useNavigation, useRevalidator } from "react-router";
+import { Form, Link, useActionData, useLoaderData, useNavigation, useRevalidator } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -171,16 +171,25 @@ export default function FeedbackPage() {
               <s-box key={item.id} padding="base" borderWidth="base" borderRadius="base">
                 <s-stack direction="inline" gap="base">
                   <div style={{ flex: 1 }}>
-                    <a href={`/app/feedback/${item.id}`} style={{ textDecoration: "none", color: "inherit" }}>
+                    <Link to={`/app/feedback/${item.id}`} style={{ textDecoration: "none", color: "inherit" }}>
                       <s-text>
                         {item.requestText.length > 120
                           ? item.requestText.slice(0, 120) + "…"
                           : item.requestText}
                       </s-text>
-                    </a>
+                    </Link>
                     <s-paragraph>
                       {new Date(item.createdAt).toLocaleString()}
                     </s-paragraph>
+                    {item.status === "failed" && item.errorMessage && (
+                      <s-paragraph>
+                        <span style={{ color: "#d72c0d", fontSize: 12 }}>
+                          Error: {item.errorMessage.length > 120
+                            ? item.errorMessage.slice(0, 120) + "…"
+                            : item.errorMessage}
+                        </span>
+                      </s-paragraph>
+                    )}
                   </div>
                   <s-badge tone={statusTone(item.status)}>{statusLabel(item.status)}</s-badge>
                 </s-stack>

@@ -94,6 +94,7 @@ async function processPmAgent(job: Job<PmAgentJobData>): Promise<void> {
   });
   if (!feedbackRequest) throw new Error(`FeedbackRequest ${feedbackId} not found`);
 
+  try {
   await prisma.feedbackRequest.update({
     where: { id: feedbackId },
     data: { status: "pm_analyzing" },
@@ -164,6 +165,15 @@ ${pmDirective}
   // Enqueue builder agent
   const { builderAgentQueue } = await import("./builderAgent");
   await builderAgentQueue.add(`build-${feedbackId}`, { feedbackId, shopId });
+
+  } catch (err: unknown) {
+    const errorMessage = (err as Error).message ?? String(err);
+    await prisma.feedbackRequest.update({
+      where: { id: feedbackId },
+      data: { status: "failed", errorMessage },
+    }).catch(() => {});
+    throw err;
+  }
 }
 
 export function startPmAgentWorker() {

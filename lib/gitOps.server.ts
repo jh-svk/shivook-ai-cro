@@ -11,20 +11,18 @@ function githubToken(): string {
 }
 
 export async function getRepoSlug(): Promise<string> {
+  // Env var is primary — Railway strips .git from deployed containers
+  if (process.env.GITHUB_REPO) return process.env.GITHUB_REPO;
   try {
     const { stdout } = await execFileAsync("git", ["remote", "get-url", "origin"], {
       cwd: process.cwd(),
     });
     const url = stdout.trim();
-    // HTTPS: https://github.com/owner/repo.git
-    // SSH:   git@github.com:owner/repo.git
-    const httpsMatch = url.match(/github\.com[/:](.+\/.+?)(?:\.git)?$/);
-    if (httpsMatch) return httpsMatch[1];
-    throw new Error(`Could not parse repo slug from remote URL: ${url}`);
+    const match = url.match(/github\.com[/:](.+\/.+?)(?:\.git)?$/);
+    if (match) return match[1];
+    throw new Error(`Could not parse repo slug from: ${url}`);
   } catch {
-    const fallback = process.env.GITHUB_REPO;
-    if (fallback) return fallback;
-    throw new Error("Could not determine repo slug from git remote or GITHUB_REPO env var");
+    throw new Error("GITHUB_REPO env var is not set and git remote lookup failed");
   }
 }
 
