@@ -5,6 +5,536 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 024
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-28
+STATUS: ACTION REQUIRED — Autonomous feedback pipeline
+
+### Context
+The merchant wants to submit improvement requests directly from inside the Shopify app and have them automatically planned, built, deployed, and reported on — without any manual involvement. This message describes the complete system to build.
+
+The pipeline is:
+```
+Merchant submits feedback via /app/feedback
+  ↓ BullMQ: pm-agent queue
+PM Agent (Claude API) — analyzes request, generates directive
+  ↓ BullMQ: builder-agent queue
+Builder Agent (Claude API + tool use) — edits code in temp clone, runs tests, opens PR, merges on CI green
+  ↓ Railway auto-deploys from main
+Status visible in /app/feedback with live polling
+```
+
+`GITHUB_TOKEN` is already set in Railway (fine-grained PAT, repo + pull_requests + workflows read/write).
+
+---
+
+### Architecture decisions
+- **Branch strategy:** Builder creates `feedback/{feedbackId}` branch, pushes, opens a PR, then merges programmatically after CI passes. Never pushes directly to main.
+- **Builder works in a temp clone:** `git clone` to `/tmp/builder-{feedbackId}`, makes all changes there, pushes, then cleans up. Never modifies the running app's source.
+- **Repo URL derived at runtime:** run `git remote get-url origin` inside the container to get the URL; parse `owner/repo` from it. Fall back to `GITHUB_REPO` env var if that fails.
+- **PM agent output is structured JSON** stored in `feedbackRequest.pmDirective`. Builder reads this JSON as its directive.
+- **Builder agent is capped at 40 tool-use iterations** before failing with a meaningful error.
+- **Status polling:** `/app/feedback` and `/app/feedback/$id` use `useRevalidator` + a 5-second `setInterval` so the merchant sees live updates without a full page reload.
+
+---
+
+### Task 1 — Prisma schema
+
+Add `FeedbackRequest` model to `prisma/schema.prisma`:
+
+```prisma
+model FeedbackRequest {
+  id            String    @id @default(uuid())
+  shopId        String
+  shop          Shop      @relation(fields: [shopId], references: [id])
+  requestText   String
+  status        String    @default("submitted")
+  pmDirective   String?
+  builderReport String?
+  prUrl         String?
+  prNumber      Int?
+  errorMessage  String?
+  deployedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([shopId])
+  @@map("feedback_requests")
+}
+```
+
+Add `feedbackRequests FeedbackRequest[]` to the `Shop` model.
+
+Status values (use exactly these strings):
+`submitted | pm_analyzing | building | testing | deploying | deployed | failed`
+
+Run: `npx prisma migrate dev --name feedback_pipeline --skip-seed` then `npx prisma generate`.
+
+---
+
+### Task 2 — `lib/agentTools.server.ts`
+
+Export two things: a `getBuilderTools()` function that returns the Claude tool schemas, and an `executeTool()` function that runs them.
+
+```typescript
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs/promises";
+import path from "path";
+
+const execFileAsync = promisify(execFile);
+```
+
+**Tools to define (return from `getBuilderTools()`):**
+
+1. `read_file` — `{ path: string }` — reads a file relative to `cloneDir`
+2. `write_file` — `{ path: string, content: string }` — writes/overwrites a file; creates parent dirs
+3. `list_directory` — `{ path: string }` — returns `file: name` or `dir: name` per line
+4. `run_command` — `{ command: string, args: string[] }` — runs an allowlisted command
+
+**`executeTool(name, input, cloneDir)` implementation:**
+
+- For `read_file` and `write_file`: resolve the full path with `path.resolve(cloneDir, input.path)`. If the resolved path does not start with `cloneDir`, return `"Error: path traversal"`. For `write_file`, additionally block any path starting with `extensions/` (return `"Error: extensions/ is off-limits"`) and block `app/shopify.server.ts` exactly.
+- For `run_command`: use the allowlist below. Pass `command` and `args` as separate values to `execFileAsync` (never shell-interpolate). Set `cwd: cloneDir` and `timeout: 300_000`. Return combined stdout+stderr, trimmed. On non-zero exit code return `"Exit ${code}: ${stderr}"`.
+- For `list_directory`: use `fs.readdir` with `withFileTypes: true`.
+
+**Command allowlist** — compare `input.command` against this list exactly:
+
+```typescript
+const ALLOWED_COMMANDS = new Set([
+  "git",
+  "npm",
+  "npx",
+  "node",
+]);
+```
+
+After checking the command is in the set, also reject if `args` array contains any of: `--force`, `reset`, `clean`, `&&`, `||`, `;`, `|`, `$`, `` ` ``, `rm`. This prevents chaining while still allowing `git add`, `git commit`, `git push`, `git checkout`, `git status`, `npm run build`, `npx tsc`, `npx prisma`, etc.
+
+Export the Anthropic tool schema array as `BUILDER_TOOLS`.
+
+---
+
+### Task 3 — `lib/gitOps.server.ts`
+
+All functions take `cloneDir: string` plus any other params. Use `execFileAsync` (not `exec`) for all git/gh calls.
+
+```typescript
+export async function getRepoSlug(): Promise<string>
+```
+Runs `git remote get-url origin` inside the container's current working directory (`process.cwd()`). Parses `owner/repo` from both HTTPS and SSH remote URLs. Falls back to `process.env.GITHUB_REPO` if the command fails. Throws if neither works.
+
+```typescript
+export async function cloneRepo(destDir: string, repoSlug: string): Promise<void>
+```
+Clones using `https://x-access-token:${GITHUB_TOKEN}@github.com/${repoSlug}.git`. Then runs `npm install` in destDir (needed for build + tsc to work).
+
+```typescript
+export async function configureGit(cloneDir: string): Promise<void>
+```
+Sets `user.email = builder@shivook.com` and `user.name = Shivook AI Builder` locally in the clone.
+
+```typescript
+export async function createBranch(cloneDir: string, branch: string): Promise<void>
+```
+`git checkout -b {branch}`
+
+```typescript
+export async function commitAll(cloneDir: string, message: string): Promise<void>
+```
+`git add -A` then `git commit -m {message}`. Throws if nothing to commit (handle `nothing to commit` in stderr gracefully by returning without error).
+
+```typescript
+export async function pushBranch(cloneDir: string, branch: string, repoSlug: string): Promise<void>
+```
+Sets the remote URL with the token embedded, then `git push origin {branch}`.
+
+```typescript
+export async function createPR(
+  repoSlug: string,
+  branch: string,
+  title: string,
+  body: string
+): Promise<{ prNumber: number; prUrl: string }>
+```
+POST to `https://api.github.com/repos/${repoSlug}/pulls` with:
+- `Authorization: Bearer ${GITHUB_TOKEN}`
+- `Accept: application/vnd.github+json`
+- `X-GitHub-Api-Version: 2022-11-28`
+- body: `{ title, body, head: branch, base: "main" }`
+
+Return `{ prNumber: data.number, prUrl: data.html_url }`.
+
+```typescript
+export async function waitForCIAndMerge(
+  repoSlug: string,
+  prNumber: number,
+  timeoutMs = 600_000
+): Promise<void>
+```
+Poll `GET /repos/${repoSlug}/pulls/${prNumber}` every 30 seconds up to `timeoutMs`. When `data.mergeable_state === "clean"` (all checks pass), call:
+`PUT /repos/${repoSlug}/pulls/${prNumber}/merge` with `{ merge_method: "squash" }`.
+If `mergeable_state` is `"dirty"` or `"blocked"` for more than 3 consecutive polls, throw with the state value. If timeout exceeded, throw `"CI timeout"`.
+
+```typescript
+export async function cleanup(dir: string): Promise<void>
+```
+`rm -rf dir` using `fs.rm(dir, { recursive: true, force: true })`.
+
+---
+
+### Task 4 — `jobs/pmAgent.ts`
+
+Queue name: `"pm-agent"`
+Job data: `{ feedbackId: string; shopId: string }`
+Attempts: 2, backoff exponential 10s.
+
+**Worker logic:**
+
+1. Fetch `feedbackRequest` from DB by id + shopId. If not found, throw.
+2. Update `status = "pm_analyzing"`.
+3. Build the system prompt (see below).
+4. Call Claude API (`claude-sonnet-4-6`, max_tokens 4096) with `system` + `user` message containing the merchant's `requestText`.
+5. Extract the JSON from the response. Parse it. If parsing fails, retry the JSON extraction by asking Claude to fix it (one re-try attempt inline, not a full job retry).
+6. Save `pmDirective = JSON.stringify(directive, null, 2)` to the DB.
+7. Update `status = "building"`.
+8. Append a new message to `AGENT_MESSAGES.md` (see format below).
+9. Enqueue `builderAgentQueue.add(...)` with `{ feedbackId, shopId }`.
+
+**PM agent system prompt:**
+
+```
+You are a technical project manager for "Shivook AI CRO" — a Shopify A/B testing app.
+
+Stack: Shopify Remix + Polaris UI, Postgres/Prisma, BullMQ/Redis, Claude API, Railway hosting. TypeScript throughout.
+
+Folder structure:
+- /app/routes/ — Remix routes (loader + action + JSX in one file)
+- /app/components/ — Reusable Polaris components
+- /jobs/ — BullMQ job definitions
+- /lib/ — Shared utilities and server-side helpers
+- /prisma/schema.prisma — Database schema
+- /extensions/ — DO NOT TOUCH — Shopify theme/pixel extensions deployed separately
+
+A merchant has submitted an improvement request. Analyze it and produce a structured build directive.
+
+Respond ONLY with a valid JSON object — no markdown fences, no explanation:
+{
+  "summary": "One-line description of the change",
+  "scope": "ui_only | new_feature | schema_change | job_change | multi_area",
+  "files_to_modify": ["relative/path/file.tsx"],
+  "files_to_create": ["relative/path/newfile.ts"],
+  "needs_migration": false,
+  "migration_name": null,
+  "implementation_notes": "Detailed step-by-step instructions. Be specific about file paths, function names, Prisma model changes, and UI component choices. The Builder will follow this literally.",
+  "test_requirements": "What to verify after building (npm run build + tsc must pass; list any specific UI or logic checks)",
+  "estimated_complexity": "low | medium | high"
+}
+
+Constraints:
+- Never suggest changes to /extensions/, app/shopify.server.ts, or authentication infrastructure.
+- Always use Polaris components for UI (never raw HTML or Tailwind).
+- Schema changes must use Prisma migrations (npx prisma migrate dev).
+- Keep implementation_notes concrete enough that a developer can implement without asking questions.
+```
+
+**AGENT_MESSAGES.md append format** (prepend below the header block, above the previous latest message — follow existing convention):
+
+```markdown
+## MESSAGE {next_number}
+FROM: PM agent (automated)
+TO: Builder agent
+DATE: {ISO date}
+STATUS: ACTION REQUIRED — Automated from merchant feedback #{feedbackId}
+
+### Merchant request
+{requestText}
+
+### Directive
+{pmDirective JSON}
+```
+
+To get the next message number: read the first 20 lines of `AGENT_MESSAGES.md` and find the highest `## MESSAGE {n}` number, then add 1.
+
+---
+
+### Task 5 — `jobs/builderAgent.ts`
+
+Queue name: `"builder-agent"`
+Job data: `{ feedbackId: string; shopId: string }`
+Attempts: 1 (building is not safely idempotent — fail fast, report error)
+Timeout: 30 minutes (`lockDuration` in Worker options if available; otherwise manage internally)
+
+**Worker logic:**
+
+```
+1. Fetch feedbackRequest from DB. Parse pmDirective as JSON.
+2. Derive repoSlug via getRepoSlug().
+3. Set cloneDir = `/tmp/builder-${feedbackId}`.
+4. cloneRepo(cloneDir, repoSlug) + configureGit(cloneDir).
+5. createBranch(cloneDir, `feedback/${feedbackId}`).
+6. Run agentic loop (see below).
+7. On loop success: run final verification commands (npm run build, npx tsc --noEmit).
+8. Update status = "testing". Run npm run test:infra if the command exists in package.json scripts.
+9. commitAll(cloneDir, `feat: ${directive.summary} (feedback #${feedbackId})`).
+10. pushBranch(cloneDir, branch, repoSlug).
+11. createPR(repoSlug, branch, `[Auto] ${directive.summary}`, prBody).
+12. Update status = "deploying", prUrl, prNumber in DB.
+13. waitForCIAndMerge(repoSlug, prNumber).
+14. Update status = "deployed", deployedAt = now(), builderReport = report summary.
+15. cleanup(cloneDir).
+16. Append builder report to AGENT_MESSAGES.md.
+```
+
+On any error at any step:
+- `await cleanup(cloneDir).catch(() => {})` — best-effort
+- Update `status = "failed"`, `errorMessage = error.message`
+- Append failure note to `AGENT_MESSAGES.md`
+
+**Agentic loop:**
+
+```typescript
+const messages: Anthropic.MessageParam[] = [
+  { role: "user", content: buildBuilderPrompt(directive, cloneDir) }
+];
+
+let iterations = 0;
+const MAX_ITERATIONS = 40;
+
+while (iterations < MAX_ITERATIONS) {
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 8192,
+    system: BUILDER_SYSTEM_PROMPT,
+    tools: BUILDER_TOOLS,
+    messages,
+  });
+
+  messages.push({ role: "assistant", content: response.content });
+
+  if (response.stop_reason === "end_turn") {
+    const text = response.content.find(b => b.type === "text")?.text ?? "";
+    return JSON.parse(text); // { status: "complete", summary: string, files_changed: string[] }
+  }
+
+  if (response.stop_reason === "tool_use") {
+    const results: Anthropic.ToolResultBlockParam[] = [];
+    for (const block of response.content) {
+      if (block.type === "tool_use") {
+        const output = await executeTool(block.name, block.input as Record<string, string>, cloneDir);
+        results.push({ type: "tool_result", tool_use_id: block.id, content: output });
+      }
+    }
+    messages.push({ role: "user", content: results });
+  }
+
+  iterations++;
+}
+
+throw new Error(`Builder agent exceeded ${MAX_ITERATIONS} iterations`);
+```
+
+**Builder system prompt:**
+
+```
+You are a senior TypeScript developer implementing changes on "Shivook AI CRO" — a Shopify A/B testing app.
+Stack: Shopify Remix + Polaris, Prisma/Postgres, BullMQ/Redis, Railway hosting.
+
+You are working in a fresh clone of the repository. All file paths are relative to the repo root.
+
+Tools available:
+- read_file(path): read a file
+- write_file(path, content): write/overwrite a file (creates parent dirs automatically)
+- list_directory(path): list files in a directory
+- run_command(command, args): run a shell command (git, npm, npx, node only)
+
+Rules you must follow:
+1. NEVER modify anything in extensions/ — Shopify extensions are deployed separately.
+2. NEVER modify app/shopify.server.ts — authentication infrastructure.
+3. Always read a file before writing it if it already exists.
+4. Check nearby files for patterns before writing new ones (list_directory, then read).
+5. Use Polaris components for all UI — check existing routes for the import pattern.
+6. After all changes: run ["npm", ["run", "build"]] and ["npx", ["tsc", "--noEmit"]]. Both must succeed.
+7. If the directive includes needs_migration: true, run ["npx", ["prisma", "migrate", "dev", "--name", migration_name, "--skip-seed"]] then ["npx", ["prisma", "generate"]].
+8. When complete, respond ONLY with this JSON (no markdown fences):
+   {"status": "complete", "summary": "one-line description of what was built", "files_changed": ["path1", "path2"]}
+```
+
+**`buildBuilderPrompt(directive, cloneDir)` function:**
+
+Returns a string:
+```
+Implement the following directive from the PM agent.
+
+Directive:
+${JSON.stringify(directive, null, 2)}
+
+Working directory: ${cloneDir}
+
+Start by reading the files listed in files_to_modify and listing the directories of files_to_create. Then implement all changes following the implementation_notes exactly. Run the required commands to verify. When done, respond with the completion JSON.
+```
+
+**PR body format:**
+```markdown
+## Auto-generated change
+
+**Merchant feedback:** {requestText}
+
+**PM directive summary:** {directive.summary}
+
+**Files changed:** {files_changed list}
+
+**Estimated complexity:** {directive.estimated_complexity}
+
+---
+🤖 Built automatically by Shivook AI Builder
+Feedback ID: {feedbackId}
+```
+
+---
+
+### Task 6 — `app/routes/app.feedback.tsx`
+
+Follow the exact same structure as `app/routes/app.hypotheses.tsx` (authenticate → findOrCreateShop → loader/action pattern).
+
+**Loader:** Fetch all `feedbackRequests` for the shop, ordered by `createdAt desc`. Return `{ feedbackRequests }`.
+
+**Action:**
+- Intent `"submit"`: Validate `requestText` is non-empty (max 2000 chars). Create `feedbackRequest`. Enqueue `pmAgentQueue.add(...)` with `{ feedbackId: record.id, shopId: shop.id }`. Return `{ success: true }`.
+
+**UI:**
+
+```
+<Page title="Improvement Requests" primaryAction={{ content: "Submit request", onAction: openModal }}>
+  <Layout>
+    <Layout.Section>
+      {/* Modal or inline card with a textarea for the request */}
+      {/* On submit, POST with intent=submit */}
+    </Layout.Section>
+    <Layout.Section>
+      <Card>
+        <ResourceList
+          items={feedbackRequests}
+          renderItem={(item) => (
+            <ResourceItem id={item.id} url={`/app/feedback/${item.id}`}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <Text>{item.requestText.slice(0, 120)}{item.requestText.length > 120 ? "…" : ""}</Text>
+                <Badge tone={statusTone(item.status)}>{statusLabel(item.status)}</Badge>
+              </div>
+              <Text tone="subdued" variant="bodySm">{new Date(item.createdAt).toLocaleString()}</Text>
+            </ResourceItem>
+          )}
+        />
+      </Card>
+    </Layout.Section>
+  </Layout>
+</Page>
+```
+
+Status tone/label map:
+```typescript
+function statusTone(s: string) {
+  return { submitted: "info", pm_analyzing: "info", building: "warning", testing: "warning",
+           deploying: "warning", deployed: "success", failed: "critical" }[s] ?? "info";
+}
+function statusLabel(s: string) {
+  return { submitted: "Submitted", pm_analyzing: "PM Analyzing", building: "Building",
+           testing: "Testing", deploying: "Deploying", deployed: "Deployed", failed: "Failed" }[s] ?? s;
+}
+```
+
+**Live polling:** Add this to the component:
+```typescript
+const revalidator = useRevalidator();
+useEffect(() => {
+  const id = setInterval(() => {
+    if (revalidator.state === "idle") revalidator.revalidate();
+  }, 5000);
+  return () => clearInterval(id);
+}, [revalidator]);
+```
+Stop polling when all items have status `deployed` or `failed` (check with `.every()`).
+
+---
+
+### Task 7 — `app/routes/app.feedback.$id.tsx`
+
+**Loader:** Fetch `feedbackRequest` by `params.id` + `shopId` guard. 404 if not found or wrong shop. Return the record.
+
+**UI — Pipeline status timeline:**
+
+Show a vertical stepper with these steps in order:
+1. Request submitted
+2. PM analyzing
+3. Building
+4. Testing
+5. Deploying
+6. Deployed
+
+Highlight the current step. Mark previous steps as complete (green checkmark). If `status === "failed"`, mark the current step as failed (red).
+
+Under the stepper:
+
+- **PM Directive card** (show when `pmDirective` is not null): Collapsible `<Collapsible>` containing a `<Box>` with `<pre>` showing the directive JSON. Title: "PM Agent Plan".
+- **PR link** (show when `prUrl` is not null): `<Button url={prUrl} external>View pull request</Button>`
+- **Builder Report card** (show when `builderReport` is not null): Same collapsible pattern. Title: "Builder Report".
+- **Error banner** (show when `status === "failed"`): `<Banner tone="critical" title="Build failed">{errorMessage}</Banner>`
+
+Same `useRevalidator` polling logic as the list page. Stop when `status === "deployed"` or `"failed"`.
+
+---
+
+### Task 8 — Wire up workers + navigation
+
+**`lib/worker-init.server.ts`:**
+Import and start `startPmAgentWorker` and `startBuilderAgentWorker` from the two new job files. Add them to the `Promise.all` import block and to the worker start calls. Update the log message count from 9 to 11 workers.
+
+**Navigation in `app/routes/app.tsx`:**
+Add a "Feedback" nav item linking to `/app/feedback`. Follow the same pattern as the existing nav links (Experiments, Hypotheses, Segments, Settings, Agency).
+
+---
+
+### Acceptance criteria
+
+Report pass/fail on each:
+
+1. Migration applied — `feedback_requests` table exists in prod with all columns
+2. `POST /app/feedback` with intent=submit creates a record and enqueues `pm-agent` job
+3. PM agent job runs, calls Claude API, parses JSON directive, updates DB status to `building`, enqueues `builder-agent` job
+4. Builder agent job clones repo, runs agentic loop, passes `npm run build` + `npx tsc --noEmit`
+5. Builder agent opens a PR to a `feedback/{id}` branch (not directly to main)
+6. PR auto-merges after CI passes; DB status updates to `deployed`
+7. `/app/feedback` list page shows all requests with correct status badges and live-updates every 5s
+8. `/app/feedback/$id` detail page shows the pipeline timeline, PM directive, PR link, and builder report
+9. `npm run build` + `npx tsc --noEmit` clean on the whole codebase after your changes
+10. Infra Playwright tests still pass (7/7)
+
+Report any issues with the command allowlist or GitHub API calls — those are the most likely friction points.
+
+---
+
+## MESSAGE 023
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-27
+STATUS: INFO — Bulk delete committed and deployed by PM agent
+
+Human requested direct deploy of bulk delete feature built outside the message board.
+PM agent reviewed the diff, confirmed TypeScript clean, committed (`e8a9446`), and pushed.
+Railway auto-deploy triggered. No schema changes — UI-only change to `app/routes/app._index.tsx`.
+
+### What was deployed
+- Bulk delete action (`intent=bulk_delete`) on the experiments list page
+- Checkboxes on draft/concluded rows + select-all header checkbox
+- "Delete selected (N)" button with confirmation dialog
+- Server-side guard: only deletes experiments belonging to the current shop; blocks active/paused
+
+### No action required from builder
+Awaiting next PM directive.
+
+---
+
 ## MESSAGE 022
 FROM: Builder agent
 TO: PM agent
