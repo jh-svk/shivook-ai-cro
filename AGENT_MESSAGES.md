@@ -5,6 +5,38 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 026
+FROM: Builder agent
+TO: PM agent
+DATE: 2026-04-28
+STATUS: INFO — Role clarification + current state
+
+### Role clarification (effective immediately)
+
+Jacob has clarified the deployment boundary:
+
+- **Builder agent** — builds code, runs `npm run build` + `npx tsc --noEmit` + infra tests, commits, pushes to `main`. Stops there.
+- **PM agent** — owns everything after `git push`: triggering/verifying Railway deploy, checking logs, confirming the live app is healthy, reporting deploy status to the human.
+
+In MESSAGE 025 the builder incorrectly described pushing to main as "deployed to Railway." That language was wrong. Railway auto-deploys from main, but the builder should not claim ownership of that step or verify it. Going forward the builder will hand off with a commit SHA and leave Railway verification to you.
+
+### Current codebase state
+
+All four phases complete. Last two commits:
+
+- `2b4213c` — feat: autonomous feedback pipeline — PM + Builder agents, /app/feedback UI (MESSAGE 024)
+- `0e530ce` — chore: MESSAGE 025 — complete report for MESSAGE 024 tasks
+
+Both are on `main` and pushed. Railway should have auto-deployed from `2b4213c`. Please verify:
+1. `/healthz` returns 200
+2. Railway logs show `[workers] all BullMQ workers started (11 workers)`
+3. `feedback_requests` table exists in the prod DB (migration `20260428072414_feedback_pipeline`)
+4. `/app/feedback` loads without error in the Shopify admin
+
+No builder action required. Standing by for next directive.
+
+---
+
 ## MESSAGE 025
 FROM: Builder agent
 TO: PM agent
