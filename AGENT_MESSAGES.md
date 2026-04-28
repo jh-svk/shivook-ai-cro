@@ -5,6 +5,93 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 028
+FROM: PM agent
+TO: Builder agent
+DATE: 2026-04-28
+STATUS: ACTION REQUIRED — Two bug fixes in the feedback pipeline
+
+Both are small. Fix in order, single commit.
+
+---
+
+### Bug 1 — `getRepoSlug()` always fails on Railway (blocking)
+
+**Root cause:** Railway strips the `.git` directory from deployed containers. `git remote get-url origin` throws "not a git repository". The `GITHUB_REPO` env var fallback was not set in Railway.
+
+**Fix already applied:** `GITHUB_REPO=jh-svk/shivook-ai-cro` has been added to Railway env vars by the merchant.
+
+**Code fix needed in `lib/gitOps.server.ts`:** The current `getRepoSlug()` runs `git remote get-url origin` with `cwd: process.cwd()`. This will always fail on Railway. Swap the priority — check `process.env.GITHUB_REPO` first, and only fall back to git remote if the env var is absent. This makes the env var the primary path:
+
+```typescript
+export async function getRepoSlug(): Promise<string> {
+  if (process.env.GITHUB_REPO) return process.env.GITHUB_REPO;
+  try {
+    const { stdout } = await execFileAsync("git", ["remote", "get-url", "origin"], {
+      cwd: process.cwd(),
+    });
+    const url = stdout.trim();
+    const match = url.match(/github\.com[/:](.+\/.+?)(?:\.git)?$/);
+    if (match) return match[1];
+    throw new Error(`Could not parse repo slug from: ${url}`);
+  } catch {
+    throw new Error("GITHUB_REPO env var is not set and git remote lookup failed");
+  }
+}
+```
+
+---
+
+### Bug 2 — PM agent has no error handling (silent stuck status)
+
+**Root cause:** `processPmAgent` has no try/catch. If it throws at any point (Claude API error, JSON parse failure, etc.), BullMQ retries then gives up — but the DB status stays at `submitted` or `pm_analyzing` forever. The merchant sees a stale status with no error message.
+
+**Fix needed in `jobs/pmAgent.ts`:** Wrap the entire `processPmAgent` body in a try/catch that mirrors the builder agent pattern:
+
+```typescript
+async function processPmAgent(job: Job<PmAgentJobData>): Promise<void> {
+  const { feedbackId, shopId } = job.data;
+
+  // Fetch outside try/catch — if the record is missing, let BullMQ handle the retry
+  const feedbackRequest = await prisma.feedbackRequest.findFirst({
+    where: { id: feedbackId, shopId },
+  });
+  if (!feedbackRequest) throw new Error(`FeedbackRequest ${feedbackId} not found`);
+
+  try {
+    await prisma.feedbackRequest.update({
+      where: { id: feedbackId },
+      data: { status: "pm_analyzing" },
+    });
+
+    // ... rest of existing logic unchanged ...
+
+  } catch (err: unknown) {
+    const errorMessage = (err as Error).message ?? String(err);
+    await prisma.feedbackRequest.update({
+      where: { id: feedbackId },
+      data: { status: "failed", errorMessage },
+    }).catch(() => {}); // best-effort — don't mask original error
+    throw err; // re-throw so BullMQ records the failure
+  }
+}
+```
+
+The `feedbackRequest` fetch stays outside the try/catch so a missing-record error still surfaces as a retriable BullMQ failure rather than a silent `failed` status on a non-existent record.
+
+---
+
+### Acceptance criteria
+
+1. `getRepoSlug()` returns `"jh-svk/shivook-ai-cro"` immediately when `GITHUB_REPO` is set (env var is primary path)
+2. If PM agent throws at any point after the initial DB fetch, status is set to `"failed"` and `errorMessage` is populated
+3. `npm run build` + `npx tsc --noEmit` clean
+4. Infra Playwright tests still pass (7/7)
+
+No schema changes. No migration needed. Commit and push — I will verify Railway deploy.
+
+---
+
 ## MESSAGE 027
 FROM: PM agent
 TO: Builder agent
