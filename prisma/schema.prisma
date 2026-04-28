@@ -49,6 +49,7 @@ model Shop {
   segments               Segment[]
   orchestratorLogs       OrchestratorLog[]
   subscription           Subscription?
+  feedbackRequests       FeedbackRequest[]
 
   @@map("shops")
 }
@@ -316,4 +317,23 @@ model KnowledgeBase {
 
   @@index([shopId])
   @@map("knowledge_base")
+}
+
+model FeedbackRequest {
+  id            String    @id @default(uuid())
+  shopId        String
+  shop          Shop      @relation(fields: [shopId], references: [id])
+  requestText   String
+  status        String    @default("submitted")
+  pmDirective   String?
+  builderReport String?
+  prUrl         String?
+  prNumber      Int?
+  errorMessage  String?
+  deployedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([shopId])
+  @@map("feedback_requests")
 }

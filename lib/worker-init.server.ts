@@ -23,6 +23,8 @@ export async function ensureWorkersStarted() {
       { startActivationGateWorker },
       { startOrchestratorWorker },
       { startQaReviewWorker },
+      { startPmAgentWorker },
+      { startBuilderAgentWorker },
     ] = await Promise.all([
       import("../jobs/resultRefresh"),
       import("../jobs/scheduler"),
@@ -33,6 +35,8 @@ export async function ensureWorkersStarted() {
       import("../jobs/activationGate"),
       import("../jobs/orchestrator"),
       import("../jobs/qaReview"),
+      import("../jobs/pmAgent"),
+      import("../jobs/builderAgent"),
     ]);
 
     startResultRefreshWorker();
@@ -44,9 +48,11 @@ export async function ensureWorkersStarted() {
     startActivationGateWorker();
     startOrchestratorWorker();
     startQaReviewWorker();
+    startPmAgentWorker();
+    startBuilderAgentWorker();
     await registerSchedules();
 
-    console.log("[workers] all BullMQ workers started (9 workers)");
+    console.log("[workers] all BullMQ workers started (11 workers)");
   } catch (error) {
     console.error("[workers] failed to start workers", error);
     global.__croWorkersStarted = false;

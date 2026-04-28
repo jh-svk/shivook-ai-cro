@@ -52,6 +52,7 @@ export default function App() {
         <s-link href="/app">Experiments</s-link>
         <s-link href="/app/hypotheses">AI Hypotheses</s-link>
         <s-link href="/app/segments">Segments</s-link>
+        <s-link href="/app/feedback">Feedback</s-link>
         {isPro && <s-link href="/app/agency">Agency</s-link>}
         <s-link href="/app/billing">Billing</s-link>
         <s-link href="/app/settings">Settings</s-link>
