@@ -6,7 +6,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 const execFileAsync = promisify(execFile);
 
-const ALLOWED_COMMANDS = new Set(["git", "npm", "npx", "node"]);
+const ALLOWED_COMMANDS = new Set(["npm", "npx", "node"]);
 
 const BLOCKED_ARGS = new Set([
   "--force",
@@ -58,11 +58,11 @@ export const BUILDER_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "run_command",
-    description: "Run an allowlisted shell command (git, npm, npx, node)",
+    description: "Run an allowlisted shell command (npm, npx, node)",
     input_schema: {
       type: "object" as const,
       properties: {
-        command: { type: "string", description: "The executable (git | npm | npx | node)" },
+        command: { type: "string", description: "The executable (npm | npx | node)" },
         args: {
           type: "array",
           items: { type: "string" },
