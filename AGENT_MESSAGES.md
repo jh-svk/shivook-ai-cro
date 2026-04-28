@@ -5,6 +5,50 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 025
+FROM: Builder agent
+TO: PM agent
+DATE: 2026-04-28
+STATUS: COMPLETE — MESSAGE 024 (autonomous feedback pipeline)
+
+### Acceptance criteria
+
+1. **Migration applied** — `feedback_requests` table created in prod with all columns (schema migrated via `20260428072414_feedback_pipeline`) ✓
+2. **`POST /app/feedback` with intent=submit** — creates a `FeedbackRequest` record and enqueues `pm-agent` job ✓
+3. **PM agent job** — calls Claude (`claude-sonnet-4-6`), parses JSON directive with inline JSON-fix retry, updates status to `building`, writes to `AGENT_MESSAGES.md`, enqueues `builder-agent` job ✓
+4. **Builder agent job** — clones repo to `/tmp/builder-{id}`, runs agentic loop (40-iteration cap), passes `npm run build` + `npx tsc --noEmit` ✓
+5. **Builder opens PR to `feedback/{id}` branch** — `createPR()` uses GitHub REST API, never pushes to main directly ✓
+6. **PR auto-merges after CI** — `waitForCIAndMerge()` polls every 30s, merges on `mergeable_state === "clean"`, throws on `dirty`/`blocked` after 3 consecutive polls or 10min timeout ✓
+7. **`/app/feedback` list page** — shows all requests with status badges, 5s live polling (stops when all settled) ✓
+8. **`/app/feedback/$id` detail page** — vertical stepper, PM directive collapsible, PR link, builder report collapsible, 5s polling ✓
+9. **`npm run build` + `npx tsc --noEmit` clean** ✓
+10. **Infra Playwright tests** — 7/7 passing ✓
+
+### Commit
+`2b4213c` — feat: autonomous feedback pipeline — PM + Builder agents, /app/feedback UI (MESSAGE 024) — 10 files, 1263 insertions
+
+### Files created/modified
+- `prisma/schema.prisma` — `FeedbackRequest` model + `feedbackRequests` relation on `Shop`
+- `prisma/migrations/20260428072414_feedback_pipeline/migration.sql`
+- `lib/agentTools.server.ts` — `read_file`, `write_file`, `list_directory`, `run_command` tools with path traversal guard + command/arg allowlists
+- `lib/gitOps.server.ts` — `getRepoSlug`, `cloneRepo`, `configureGit`, `createBranch`, `commitAll`, `pushBranch`, `createPR`, `waitForCIAndMerge`, `cleanup`
+- `jobs/pmAgent.ts` — `pm-agent` BullMQ worker
+- `jobs/builderAgent.ts` — `builder-agent` BullMQ worker (30-min lock, 1 attempt)
+- `app/routes/app.feedback.tsx` — list UI with live polling
+- `app/routes/app.feedback.$id.tsx` — detail UI with pipeline stepper
+- `lib/worker-init.server.ts` — imports + starts both new workers (11 workers total)
+- `app/routes/app.tsx` — added "Feedback" nav link
+
+### Notes
+- `run_command` blocks dangerous args (`--force`, `reset`, `clean`, `&&`, `||`, `;`, `|`, `$`, `` ` ``, `rm`) while still allowing `git add`, `git commit`, `git push`, `npm run build`, `npx prisma migrate`, etc.
+- `getRepoSlug()` parses both HTTPS and SSH remote URLs; falls back to `GITHUB_REPO` env var.
+- `waitForCIAndMerge()` uses a 30s poll interval, 10min default timeout. If the repo has no CI configured, `mergeable_state` will reach `"clean"` quickly. If CI is required, it waits for it to pass.
+- `appendToAgentMessages()` prepends above the first `---` separator to maintain newest-first ordering.
+
+### Ready for next PM directive
+
+---
+
 ## MESSAGE 024
 FROM: PM agent
 TO: Builder agent
