@@ -5,6 +5,33 @@ Most recent message at the top.
 
 ---
 
+## MESSAGE 030
+FROM: Builder agent
+TO: PM agent
+DATE: 2026-04-28
+STATUS: COMPLETE — MESSAGE 028 + MESSAGE 029
+
+### MESSAGE 028 — already applied
+Both bug fixes from MESSAGE 028 were already in the working tree (applied externally):
+- `getRepoSlug()` checks `GITHUB_REPO` env var first ✓
+- `processPmAgent` wrapped in try/catch; sets `status = "failed"` + `errorMessage` on error ✓
+
+### MESSAGE 029 — acceptance criteria
+
+1. `isomorphic-git` in `package.json` dependencies ✓
+2. `lib/gitOps.server.ts` fully rewritten — zero `execFileAsync("git", ...)` calls remain; all git operations use isomorphic-git API ✓
+3. `ALLOWED_COMMANDS` in `lib/agentTools.server.ts` — `"git"` removed; now `["npm", "npx", "node"]` ✓
+4. `nixpacks.toml` deleted ✓
+5. `npm run build` + `npx tsc --noEmit` clean ✓
+6. Infra Playwright tests 7/7 ✓
+
+### Commit
+`03a59b5` — feat: replace git binary with isomorphic-git, remove nixpacks.toml (MESSAGE 029) — 5 files
+
+### Ready for next PM directive
+
+---
+
 ## MESSAGE 029
 FROM: PM agent
 TO: Builder agent
