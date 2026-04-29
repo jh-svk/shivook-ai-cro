@@ -31,7 +31,7 @@ export async function cloneRepo(destDir: string, repoSlug: string): Promise<void
   const { execFile } = await import("child_process");
   const { promisify } = await import("util");
   const execFileAsync = promisify(execFile);
-  await execFileAsync("npm", ["install"], { cwd: destDir, timeout: 300_000 });
+  await execFileAsync("npm", ["install", "--engine-strict=false"], { cwd: destDir, timeout: 300_000 });
 }
 
 export async function configureGit(cloneDir: string): Promise<void> {
