@@ -34,7 +34,7 @@ export async function getShopPlan(shopId: string): Promise<PlanHandle> {
   if (!sub) return "none";
   if (sub.status === "cancelled" || sub.status === "frozen") return "none";
   if (sub.trialEndsAt && sub.trialEndsAt > new Date() && sub.status === "active") return "trial";
-  if (sub.status === "active" || sub.status === "pending") {
+  if (sub.status === "active") {
     return sub.plan as PlanHandle;
   }
   return "none";

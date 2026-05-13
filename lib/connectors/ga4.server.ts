@@ -99,8 +99,12 @@ async function runReport(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function cell(row: any, idx: number): string {
-  return row?.dimensionValues?.[idx]?.value ?? row?.metricValues?.[idx]?.value ?? "";
+function dimCell(row: any, idx: number): string {
+  return row?.dimensionValues?.[idx]?.value ?? "";
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function metricCell(row: any, idx: number): string {
+  return row?.metricValues?.[idx]?.value ?? "";
 }
 
 export async function fetchGA4Snapshot(config: GA4Config): Promise<GA4Snapshot> {
@@ -136,9 +140,9 @@ export async function fetchGA4Snapshot(config: GA4Config): Promise<GA4Snapshot> 
   })) as { rows?: unknown[] };
 
   const topLandingPages = ((landingRaw.rows ?? []) as unknown[]).map((r) => ({
-    page: cell(r, 0),
-    sessions: parseInt(cell(r, 0) || "0"),
-    bounceRate: parseFloat(cell(r, 1) || "0"),
+    page: dimCell(r, 0),
+    sessions: parseInt(metricCell(r, 0) || "0"),
+    bounceRate: parseFloat(metricCell(r, 1) || "0"),
   }));
 
   // Device breakdown
@@ -149,10 +153,10 @@ export async function fetchGA4Snapshot(config: GA4Config): Promise<GA4Snapshot> 
   })) as { rows?: unknown[] };
 
   const deviceRows = (deviceRaw.rows ?? []) as unknown[];
-  const deviceTotal = deviceRows.reduce((sum: number, r) => sum + parseInt(cell(r, 0) || "0"), 0);
+  const deviceTotal = deviceRows.reduce((sum: number, r) => sum + parseInt(metricCell(r, 0) || "0"), 0);
   const deviceBreakdown = deviceRows.map((r) => {
-    const count = parseInt(cell(r, 0) || "0");
-    return { device: cell(r, 0), sessions: count, pct: deviceTotal > 0 ? count / deviceTotal : 0 };
+    const count = parseInt(metricCell(r, 0) || "0");
+    return { device: dimCell(r, 0), sessions: count, pct: deviceTotal > 0 ? count / deviceTotal : 0 };
   });
 
   // Source/medium breakdown (top 8)
@@ -167,8 +171,8 @@ export async function fetchGA4Snapshot(config: GA4Config): Promise<GA4Snapshot> 
   const sourceRows = (sourceRaw.rows ?? []) as unknown[];
   const sourceTotal = sessions || 1;
   const sourceBreakdown = sourceRows.map((r) => {
-    const s = parseInt(cell(r, 0) || "0");
-    return { source: cell(r, 0), sessions: s, pct: s / sourceTotal };
+    const s = parseInt(metricCell(r, 0) || "0");
+    return { source: dimCell(r, 0), sessions: s, pct: s / sourceTotal };
   });
 
   // Segment breakdown: device + country dimensions

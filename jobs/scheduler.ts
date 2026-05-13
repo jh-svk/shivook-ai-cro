@@ -33,7 +33,7 @@ async function runHourlyScheduler() {
     await resultRefreshQueue.add(
       `refresh-${experimentId}`,
       { experimentId },
-      { jobId: `refresh-${experimentId}-${Date.now()}` }
+      { jobId: `refresh-${experimentId}` }
     );
   }
 }

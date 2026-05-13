@@ -18,6 +18,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return { segments };
 };
 
+const JS_BLOCKLIST = [
+  /fetch\s*\(/,
+  /XMLHttpRequest/,
+  /document\.cookie/,
+  /document\.forms/,
+  /window\.location\s*=/,
+  /navigator\.sendBeacon\s*\(/,
+  /eval\s*\(/,
+  /Function\s*\(/,
+  /importScripts\s*\(/,
+  /WebSocket\s*\(/,
+];
+
+function validateJsPatch(js: string | null): string | null {
+  if (!js) return null;
+  for (const pattern of JS_BLOCKLIST) {
+    if (pattern.test(js)) {
+      return `JS patch contains a disallowed pattern: ${pattern.source}`;
+    }
+  }
+  return null;
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
@@ -34,6 +57,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!name || !hypothesis || !pageType || !elementType || !targetMetric) {
     return { error: "All fields marked required must be filled in." };
   }
+
+  const controlJsError = validateJsPatch(get("controlJsPatch") || null);
+  if (controlJsError) return { error: `Control variant: ${controlJsError}` };
+  const treatmentJsError = validateJsPatch(get("treatmentJsPatch") || null);
+  if (treatmentJsError) return { error: `Treatment variant: ${treatmentJsError}` };
 
   const maxRuntimeDays = Math.max(1, parseInt(get("maxRuntimeDays") || "28", 10));
 

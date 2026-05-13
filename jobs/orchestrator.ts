@@ -194,19 +194,26 @@ async function runOrchestrator(shopId: string) {
   const runId = randomUUID();
   console.log(`[orchestrator] starting run ${runId} for shop ${shopId}`);
 
-  const stages = [stageResearch, stageHypothesis, stageBuild, stageMonitor, stageDecide, stageShip];
+  const stages: Array<{ fn: (s: string, r: string) => Promise<void>; name: string }> = [
+    { fn: stageResearch,   name: "RESEARCH"   },
+    { fn: stageHypothesis, name: "HYPOTHESIS" },
+    { fn: stageBuild,      name: "BUILD"      },
+    { fn: stageMonitor,    name: "MONITOR"    },
+    { fn: stageDecide,     name: "DECIDE"     },
+    { fn: stageShip,       name: "SHIP"       },
+  ];
 
-  for (const stage of stages) {
+  for (const { fn, name } of stages) {
     try {
-      await stage(shopId, runId);
+      await fn(shopId, runId);
     } catch (err) {
-      console.error(`[orchestrator] stage error in run ${runId}`, err);
+      console.error(`[orchestrator] stage error in ${name} run ${runId}`, err);
       try {
         await prisma.orchestratorLog.create({
           data: {
             shopId,
             runId,
-            stage: stage.name,
+            stage: name,
             status: "failed",
             payload: { error: String(err) },
             completedAt: new Date(),

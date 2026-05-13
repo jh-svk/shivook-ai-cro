@@ -156,7 +156,9 @@ async function runHypothesisGenerator(shopId: string, reportId: string) {
     iceImpact: Math.min(10, Math.max(1, Math.round(h.iceImpact))),
     iceConfidence: Math.min(10, Math.max(1, Math.round(h.iceConfidence))),
     iceEase: Math.min(10, Math.max(1, Math.round(h.iceEase))),
-    iceScore: h.iceImpact * h.iceConfidence * h.iceEase,
+    iceScore: Math.min(10, Math.max(1, Math.round(h.iceImpact))) *
+              Math.min(10, Math.max(1, Math.round(h.iceConfidence))) *
+              Math.min(10, Math.max(1, Math.round(h.iceEase))),
     status: "backlog" as const,
     recommendedSegment: h.recommendedSegment ?? undefined,
   }));

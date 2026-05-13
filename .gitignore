@@ -32,4 +32,4 @@ database.sqlite
 # Playwright
 test-results/
 tests/.storefront-auth.json
-tests/check-proxy.mjs
+tests/check-proxy.mjs.worktrees

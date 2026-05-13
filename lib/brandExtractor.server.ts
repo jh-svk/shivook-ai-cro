@@ -6,6 +6,7 @@
 
 import type { Shop } from "@prisma/client";
 import prisma from "../app/db.server";
+import { decrypt } from "./crypto.server";
 
 type ShopForExtraction = Pick<Shop, "id" | "shopifyDomain" | "accessToken" | "brandGuardrails">;
 
@@ -42,7 +43,7 @@ async function shopifyGraphQL(
     {
       method: "POST",
       headers: {
-        "X-Shopify-Access-Token": shop.accessToken,
+        "X-Shopify-Access-Token": decrypt(shop.accessToken),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ query, variables }),

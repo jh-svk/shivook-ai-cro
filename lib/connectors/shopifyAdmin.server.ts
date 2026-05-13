@@ -11,6 +11,7 @@
  */
 
 import type { Shop } from "@prisma/client";
+import { decrypt } from "../crypto.server";
 
 export interface ShopifyFunnelSnapshot {
   period: string;
@@ -28,8 +29,8 @@ export interface ShopifyFunnelSnapshot {
 }
 
 const ORDERS_QUERY = `
-  query ($query: String!) {
-    orders(first: 250, query: $query) {
+  query ($query: String!, $after: String) {
+    orders(first: 250, query: $query, after: $after) {
       edges {
         node {
           id
@@ -56,27 +57,35 @@ async function shopifyGraphQL(
   query: string,
   variables: Record<string, unknown>
 ): Promise<unknown> {
-  const res = await fetch(
-    `https://${shop.shopifyDomain}/admin/api/2026-04/graphql.json`,
-    {
-      method: "POST",
-      headers: {
-        "X-Shopify-Access-Token": shop.accessToken,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query, variables }),
-    }
-  );
+  const token = decrypt(shop.accessToken);
+  let delay = 2000;
 
-  if (res.status === 429) {
-    // Basic rate-limit backoff — caller should retry
-    const retryAfter = parseFloat(res.headers.get("Retry-After") ?? "2");
-    await new Promise((r) => setTimeout(r, retryAfter * 1000));
-    throw new Error("Shopify rate limited — retry");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await fetch(
+      `https://${shop.shopifyDomain}/admin/api/2026-04/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query, variables }),
+      }
+    );
+
+    if (res.status === 429) {
+      const retryAfter = parseFloat(res.headers.get("Retry-After") ?? String(delay / 1000));
+      const waitMs = Math.max(retryAfter * 1000, delay);
+      await new Promise((r) => setTimeout(r, waitMs));
+      delay *= 2;
+      continue;
+    }
+
+    if (!res.ok) throw new Error(`Shopify Admin API ${res.status}`);
+    return res.json();
   }
 
-  if (!res.ok) throw new Error(`Shopify Admin API ${res.status}`);
-  return res.json();
+  throw new Error("Shopify Admin API rate limit exceeded after 3 attempts");
 }
 
 export async function fetchShopifyFunnelSnapshot(
@@ -86,13 +95,23 @@ export async function fetchShopifyFunnelSnapshot(
     .toISOString()
     .split("T")[0];
 
+  // Paginate through all orders in the 30-day window
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = (await shopifyGraphQL(shop, ORDERS_QUERY, {
-    query: `created_at:>=${thirtyDaysAgo}`,
-  })) as any;
+  const orders: any[] = [];
+  let cursor: string | null = null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const orders = (result?.data?.orders?.edges ?? []).map((e: any) => e.node);
+  do {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (await shopifyGraphQL(shop, ORDERS_QUERY, {
+      query: `created_at:>=${thirtyDaysAgo}`,
+      after: cursor,
+    })) as any;
+
+    const page = result?.data?.orders;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    orders.push(...(page?.edges ?? []).map((e: any) => e.node));
+    cursor = page?.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (cursor);
   const orderCount = orders.length;
   const totalRevenue = orders.reduce(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -6,20 +6,14 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 const execFileAsync = promisify(execFile);
 
-const ALLOWED_COMMANDS = new Set(["npm", "npx", "node"]);
-
-const BLOCKED_ARGS = new Set([
-  "--force",
-  "reset",
-  "clean",
-  "&&",
-  "||",
-  ";",
-  "|",
-  "$",
-  "`",
-  "rm",
-]);
+// Explicit allowlist of safe command + args combinations.
+// Keyed by command; value is a Set of allowed first-argument strings.
+// Any invocation not in this map is rejected regardless of the command name.
+const SAFE_INVOCATIONS: Record<string, Set<string>> = {
+  npm:  new Set(["run", "install"]),
+  npx:  new Set(["tsc", "prisma"]),
+  node: new Set(["--version"]),
+};
 
 export const BUILDER_TOOLS: Anthropic.Tool[] = [
   {
@@ -83,10 +77,24 @@ export async function executeTool(
   input: Record<string, unknown>,
   cloneDir: string
 ): Promise<string> {
+  const cloneDirWithSep = cloneDir.endsWith(path.sep) ? cloneDir : cloneDir + path.sep;
+
+  async function safeResolve(rel: string): Promise<string | null> {
+    const joined = path.resolve(cloneDir, rel);
+    // Resolve symlinks before the boundary check
+    let real: string;
+    try {
+      real = await fs.realpath(joined);
+    } catch {
+      // File doesn't exist yet (e.g. write_file creating a new file) — use joined
+      real = joined;
+    }
+    return real.startsWith(cloneDirWithSep) || real === cloneDir ? real : null;
+  }
+
   if (name === "read_file") {
-    const filePath = String(input.path);
-    const resolved = path.resolve(cloneDir, filePath);
-    if (!resolved.startsWith(cloneDir)) return "Error: path traversal";
+    const resolved = await safeResolve(String(input.path));
+    if (!resolved) return "Error: path traversal";
     try {
       return await fs.readFile(resolved, "utf-8");
     } catch (err: unknown) {
@@ -95,10 +103,8 @@ export async function executeTool(
   }
 
   if (name === "write_file") {
-    const filePath = String(input.path);
-    const content = String(input.content);
-    const resolved = path.resolve(cloneDir, filePath);
-    if (!resolved.startsWith(cloneDir)) return "Error: path traversal";
+    const resolved = await safeResolve(String(input.path));
+    if (!resolved) return "Error: path traversal";
     if (resolved.startsWith(path.resolve(cloneDir, "extensions") + path.sep)) {
       return "Error: extensions/ is off-limits";
     }
@@ -107,7 +113,7 @@ export async function executeTool(
     }
     try {
       await fs.mkdir(path.dirname(resolved), { recursive: true });
-      await fs.writeFile(resolved, content, "utf-8");
+      await fs.writeFile(resolved, String(input.content), "utf-8");
       return "ok";
     } catch (err: unknown) {
       return `Error: ${(err as Error).message}`;
@@ -115,9 +121,8 @@ export async function executeTool(
   }
 
   if (name === "list_directory") {
-    const dirPath = String(input.path);
-    const resolved = path.resolve(cloneDir, dirPath);
-    if (!resolved.startsWith(cloneDir)) return "Error: path traversal";
+    const resolved = await safeResolve(String(input.path));
+    if (!resolved) return "Error: path traversal";
     try {
       const entries = await fs.readdir(resolved, { withFileTypes: true });
       return entries
@@ -131,14 +136,14 @@ export async function executeTool(
   if (name === "run_command") {
     const command = String(input.command);
     const args = (input.args as string[]) ?? [];
+    const firstArg = args[0] ?? "";
 
-    if (!ALLOWED_COMMANDS.has(command)) {
+    const allowedFirstArgs = SAFE_INVOCATIONS[command];
+    if (!allowedFirstArgs) {
       return `Error: command "${command}" is not in the allowlist`;
     }
-    for (const arg of args) {
-      if (BLOCKED_ARGS.has(arg)) {
-        return `Error: argument "${arg}" is not allowed`;
-      }
+    if (!allowedFirstArgs.has(firstArg)) {
+      return `Error: "${command} ${firstArg}" is not an allowed invocation`;
     }
 
     try {

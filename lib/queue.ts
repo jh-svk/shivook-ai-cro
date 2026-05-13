@@ -1,4 +1,4 @@
-import { Queue, Worker, type Processor } from "bullmq";
+import { Queue } from "bullmq";
 import IORedis from "ioredis";
 
 if (!process.env.REDIS_URL) {
@@ -17,12 +17,3 @@ export function createQueue(name: string) {
   return new Queue(name, { connection });
 }
 
-export function createWorker<T = unknown, R = unknown>(
-  name: string,
-  processor: Processor<T, R>
-) {
-  return new Worker<T, R>(name, processor, {
-    connection,
-    concurrency: 5,
-  });
-}

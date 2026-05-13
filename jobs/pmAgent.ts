@@ -89,12 +89,12 @@ async function appendToAgentMessages(content: string): Promise<void> {
 async function processPmAgent(job: Job<PmAgentJobData>): Promise<void> {
   const { feedbackId, shopId } = job.data;
 
+  try {
   const feedbackRequest = await prisma.feedbackRequest.findFirst({
     where: { id: feedbackId, shopId },
   });
   if (!feedbackRequest) throw new Error(`FeedbackRequest ${feedbackId} not found`);
 
-  try {
   await prisma.feedbackRequest.update({
     where: { id: feedbackId },
     data: { status: "pm_analyzing" },
