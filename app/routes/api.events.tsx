@@ -20,6 +20,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 401 });
   }
 
+  // The proxy signature proves shop identity — resolve to a DB ID to scope event writes
+  const shopDomain = url.searchParams.get("shop");
+  if (!shopDomain) return new Response(null, { status: 400 });
+  const shopRecord = await prisma.shop.findUnique({
+    where: { shopifyDomain: shopDomain },
+    select: { id: true },
+  });
+  if (!shopRecord) return new Response(null, { status: 404 });
+
   let body: unknown;
   try {
     body = await request.json();
@@ -56,9 +65,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    // Verify the experiment + variant exist before writing (prevents phantom rows)
+    // Verify experiment belongs to the signing shop before writing
     const variant = await prisma.variant.findFirst({
-      where: { id: variantId, experimentId },
+      where: { id: variantId, experimentId, experiment: { shopId: shopRecord.id } },
       select: { id: true },
     });
 

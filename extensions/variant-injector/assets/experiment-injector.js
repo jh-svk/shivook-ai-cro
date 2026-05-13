@@ -25,6 +25,11 @@
     });
   }
 
+  // ── Hex hash helper (FNV-1a → 8-char hex, used for visitor ID pseudonymisation) ─
+  function hashHex(str) {
+    return (fnv32a(str) >>> 0).toString(16).padStart(8, '0');
+  }
+
   // ── Storage helpers (swallow errors on private-mode iOS) ────────────────────
   function lsGet(k)    { try { return localStorage.getItem(k);  } catch (_) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v);      } catch (_) {} }
@@ -233,8 +238,12 @@
   if (!root) return;
 
   var pageType  = root.dataset.pageType || '';
-  var visitorId = getOrCreate(lsGet, lsSet, LS_VISITOR,  uuid4);
-  var sessionId = getOrCreate(ssGet, ssSet, SS_SESSION,  uuid4);
+  // Store a stable raw UUID locally; hash it before any transmission so no
+  // raw identifier leaves the browser — satisfies the "visitorId (hashed)" spec.
+  var rawVisitorId = getOrCreate(lsGet, lsSet, LS_VISITOR, uuid4);
+  var visitorId    = hashHex(rawVisitorId);
+  var rawSessionId = getOrCreate(ssGet, ssSet, SS_SESSION, uuid4);
+  var sessionId    = hashHex(rawSessionId);
 
   detectGeoCountry().then(function (geoCountry) {
     var ctx = buildContext(geoCountry);
@@ -251,7 +260,7 @@
         // Skip experiments this visitor doesn't match
         if (!matchesSegment(exp.segment, ctx)) return;
 
-        var variantType = assignVariant(visitorId, exp.id);
+        var variantType = assignVariant(rawVisitorId, exp.id);
 
         var variant = null;
         for (var i = 0; i < exp.variants.length; i++) {

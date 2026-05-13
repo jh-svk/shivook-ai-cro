@@ -4,6 +4,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
+import { encrypt } from "../../lib/crypto.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -30,15 +31,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const clarityProjectId  = String(fd.get("clarityProjectId") ?? "").trim();
   const clarityBearerToken = String(fd.get("clarityBearerToken") ?? "").trim();
   if (clarityProjectId && clarityBearerToken) {
+    const encryptedToken = encrypt(clarityBearerToken);
     const existing = await prisma.dataSource.findFirst({ where: { shopId: shop.id, type: "clarity" } });
     if (existing) {
       await prisma.dataSource.update({
         where: { id: existing.id },
-        data: { config: { projectId: clarityProjectId, bearerToken: clarityBearerToken } },
+        data: { config: { projectId: clarityProjectId, bearerToken: encryptedToken } },
       });
     } else {
       await prisma.dataSource.create({
-        data: { shopId: shop.id, type: "clarity", config: { projectId: clarityProjectId, bearerToken: clarityBearerToken } },
+        data: { shopId: shop.id, type: "clarity", config: { projectId: clarityProjectId, bearerToken: encryptedToken } },
       });
     }
   } else if (clarityProjectId && !clarityBearerToken) {

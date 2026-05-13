@@ -40,16 +40,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
   try {
-    const [experiment, shop] = await Promise.all([
-      prisma.experiment.findUnique({
-        where: { id: params.id },
-        include: { variants: true, result: true, segment: true },
-      }),
-      prisma.shop.findUnique({
-        where: { shopifyDomain: session.shop },
-        select: { shopifyDomain: true },
-      }),
-    ]);
+    const shop = await prisma.shop.findUnique({
+      where: { shopifyDomain: session.shop },
+      select: { id: true, shopifyDomain: true },
+    });
+    if (!shop) throw new Response("Shop not found", { status: 404 });
+
+    const experiment = await prisma.experiment.findUnique({
+      where: { id: params.id, shopId: shop.id },
+      include: { variants: true, result: true, segment: true },
+    });
     if (!experiment) throw new Response("Not Found", { status: 404 });
 
     // Load QA log for pending_approval experiments
@@ -60,7 +60,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         })
       : null;
 
-    return { experiment, qaLog, shopDomain: shop?.shopifyDomain ?? "" };
+    return { experiment, qaLog, shopDomain: shop.shopifyDomain };
   } catch (error) {
     if (error instanceof Response) throw error;
     console.error("[experiments.$id] loader error", error);
@@ -69,15 +69,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+
+  const shop = await prisma.shop.findUnique({
+    where: { shopifyDomain: session.shop },
+    select: { id: true },
+  });
+  if (!shop) return { error: "Shop not found." };
+  const shopId = shop.id;
 
   const fd = await request.formData();
   const intent = String(fd.get("intent"));
 
   if (intent === "delete") {
     const experiment = await prisma.experiment.findUnique({
-      where: { id: params.id },
-      select: { status: true, shopId: true },
+      where: { id: params.id, shopId },
+      select: { status: true },
     });
     if (!experiment) return { error: "Experiment not found." };
     if (experiment.status === "active") {
@@ -92,7 +99,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         });
       } catch { /* best-effort */ }
       await prisma.variant.deleteMany({ where: { experimentId: params.id } });
-      await prisma.experiment.delete({ where: { id: params.id } });
+      await prisma.experiment.delete({ where: { id: params.id, shopId } });
       throw redirect("/app");
     } catch (error) {
       if (error instanceof Response) throw error;
@@ -106,7 +113,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     if (!check.allowed) return { error: check.reason ?? "Cannot activate experiment." };
     try {
       await prisma.experiment.update({
-        where: { id: params.id },
+        where: { id: params.id, shopId },
         data: { status: "active", startedAt: new Date() },
       });
       return { success: true };
@@ -119,7 +126,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   if (intent === "approve") {
     try {
       await prisma.experiment.update({
-        where: { id: params.id },
+        where: { id: params.id, shopId },
         data: { status: "active", startedAt: new Date() },
       });
       return { success: true };
@@ -132,7 +139,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   if (intent === "reject_approval") {
     try {
       await prisma.experiment.update({
-        where: { id: params.id },
+        where: { id: params.id, shopId },
         data: { status: "draft" },
       });
       return { success: true };
@@ -153,7 +160,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   try {
     await prisma.experiment.update({
-      where: { id: params.id },
+      where: { id: params.id, shopId },
       data: { status: transition.status, ...transition.extra },
     });
     return { success: true };
@@ -353,7 +360,7 @@ export default function ExperimentDetail() {
                     </pre>
                   </s-stack>
                 )}
-                <s-link href={`https://${experiment.shopId}/admin/themes/current/editor`} target="_blank">
+                <s-link href={`https://${shopDomain}/admin/themes/current/editor`} target="_blank">
                   Open Theme Editor →
                 </s-link>
               </s-stack>

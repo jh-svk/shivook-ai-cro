@@ -33,40 +33,42 @@ async function processResultRefresh(experimentId: string) {
   const treatmentVariant = experiment.variants.find((v) => v.type === "treatment");
   if (!controlVariant || !treatmentVariant) return;
 
-  // Visitors = unique visitorIds that received a view event
-  const viewEvents = await prisma.event.findMany({
-    where: { experimentId, eventType: "view" },
-    select: { variantId: true, visitorId: true },
-  });
-
-  const controlVisitors = new Set(
-    viewEvents.filter((e) => e.variantId === controlVariant.id).map((e) => e.visitorId)
-  ).size;
-  const treatmentVisitors = new Set(
-    viewEvents.filter((e) => e.variantId === treatmentVariant.id).map((e) => e.visitorId)
-  ).size;
-
-  // Conversions depend on the target metric
+  // Visitors = unique visitorIds per variant (SQL aggregation avoids loading all rows into heap)
   const conversionEventType =
     experiment.targetMetric === "add_to_cart_rate"
       ? "add_to_cart"
-      : "purchase"; // conversion_rate and revenue_per_visitor both key off purchases
+      : "purchase";
 
-  const conversionEvents = await prisma.event.findMany({
-    where: { experimentId, eventType: conversionEventType },
-    select: { variantId: true, visitorId: true, revenue: true },
-  });
+  type CountRow = { variantid: string; cnt: bigint };
 
-  const controlConversions = new Set(
-    conversionEvents
-      .filter((e) => e.variantId === controlVariant.id)
-      .map((e) => e.visitorId)
-  ).size;
-  const treatmentConversions = new Set(
-    conversionEvents
-      .filter((e) => e.variantId === treatmentVariant.id)
-      .map((e) => e.visitorId)
-  ).size;
+  const [viewCounts, conversionCounts, revenueRows] = await Promise.all([
+    prisma.$queryRaw<CountRow[]>`
+      SELECT "variantId" AS variantid, COUNT(DISTINCT "visitorId") AS cnt
+      FROM "Event"
+      WHERE "experimentId" = ${experimentId} AND "eventType" = 'view'
+      GROUP BY "variantId"
+    `,
+    prisma.$queryRaw<CountRow[]>`
+      SELECT "variantId" AS variantid, COUNT(DISTINCT "visitorId") AS cnt
+      FROM "Event"
+      WHERE "experimentId" = ${experimentId} AND "eventType" = ${conversionEventType}
+      GROUP BY "variantId"
+    `,
+    prisma.$queryRaw<{ variantid: string; total: string | null }[]>`
+      SELECT "variantId" AS variantid, SUM("revenue") AS total
+      FROM "Event"
+      WHERE "experimentId" = ${experimentId} AND "eventType" = 'purchase'
+      GROUP BY "variantId"
+    `,
+  ]);
+
+  const getCount = (rows: CountRow[], variantId: string) =>
+    Number(rows.find((r) => r.variantid === variantId)?.cnt ?? 0);
+
+  const controlVisitors = getCount(viewCounts, controlVariant.id);
+  const treatmentVisitors = getCount(viewCounts, treatmentVariant.id);
+  const controlConversions = getCount(conversionCounts, controlVariant.id);
+  const treatmentConversions = getCount(conversionCounts, treatmentVariant.id);
 
   // Add-to-cart events
   const [controlAddToCartCount, treatmentAddToCartCount, controlCheckoutCount, treatmentCheckoutCount] =
@@ -77,18 +79,11 @@ async function processResultRefresh(experimentId: string) {
       prisma.event.count({ where: { experimentId, variantId: treatmentVariant.id, eventType: "checkout_started" } }),
     ]);
 
-  // Revenue totals (from purchase events regardless of targetMetric)
-  const purchaseEvents = await prisma.event.findMany({
-    where: { experimentId, eventType: "purchase" },
-    select: { variantId: true, revenue: true },
-  });
+  const getRevenue = (variantId: string) =>
+    parseFloat(revenueRows.find((r) => r.variantid === variantId)?.total ?? "0");
 
-  const controlRevenue = purchaseEvents
-    .filter((e) => e.variantId === controlVariant.id)
-    .reduce((s, e) => s + (e.revenue ?? 0), 0);
-  const treatmentRevenue = purchaseEvents
-    .filter((e) => e.variantId === treatmentVariant.id)
-    .reduce((s, e) => s + (e.revenue ?? 0), 0);
+  const controlRevenue = getRevenue(controlVariant.id);
+  const treatmentRevenue = getRevenue(treatmentVariant.id);
 
   const stats = computeStats(
     { visitors: controlVisitors, conversions: controlConversions },
@@ -96,8 +91,10 @@ async function processResultRefresh(experimentId: string) {
   );
 
   // AOV guardrail: trip if treatment AOV drops > 3% below control AOV
-  const controlPurchases = purchaseEvents.filter((e) => e.variantId === controlVariant.id).length;
-  const treatmentPurchases = purchaseEvents.filter((e) => e.variantId === treatmentVariant.id).length;
+  const [controlPurchases, treatmentPurchases] = await Promise.all([
+    prisma.event.count({ where: { experimentId, variantId: controlVariant.id, eventType: "purchase" } }),
+    prisma.event.count({ where: { experimentId, variantId: treatmentVariant.id, eventType: "purchase" } }),
+  ]);
   const controlAov = controlPurchases > 0 ? controlRevenue / controlPurchases : 0;
   const treatmentAov = treatmentPurchases > 0 ? treatmentRevenue / treatmentPurchases : 0;
 
@@ -169,9 +166,14 @@ async function processResultRefresh(experimentId: string) {
   });
 
   // Auto-conclude on guardrail trip or Bayesian decision (95% probability)
+  // Guard against early peeking: Bayesian threshold requires minRuntimeDays first
+  const daysSinceStart = experiment.startedAt
+    ? (Date.now() - experiment.startedAt.getTime()) / (1000 * 60 * 60 * 24)
+    : 0;
+  const metMinRuntime = daysSinceStart >= experiment.minRuntimeDays;
   const shouldConclude =
     experiment.status === "active" &&
-    (aovTripped || stats.probToBeatControl !== null && stats.probToBeatControl >= 0.95);
+    (aovTripped || (metMinRuntime && stats.probToBeatControl !== null && stats.probToBeatControl >= 0.95));
 
   if (shouldConclude) {
     const reason = aovTripped ? "AOV guardrail tripped" : "Bayesian 95% threshold reached";

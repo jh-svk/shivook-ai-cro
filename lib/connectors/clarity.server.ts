@@ -39,7 +39,9 @@ function dateRange(): { startDate: string; endDate: string } {
 }
 
 export async function fetchClaritySnapshot(config: ClarityConfig): Promise<ClaritySnapshot> {
-  const { projectId, bearerToken } = config;
+  const { decrypt } = await import("../crypto.server");
+  const { projectId } = config;
+  const bearerToken = decrypt(config.bearerToken);
   const { startDate, endDate } = dateRange();
 
   const url = new URL(`${BASE_URL}/data`);
