@@ -96,7 +96,8 @@ function isSafeStylesheetUrl(url: string, shopDomain: string): boolean {
       hostname.endsWith(".shopifycdn.com") ||
       hostname.endsWith(".shopify.com") ||
       hostname.endsWith(".myshopify.com") ||
-      hostname.endsWith(".cdn.shopify.com")
+      hostname.endsWith(".cdn.shopify.com") ||
+      hostname.endsWith(".shopifycloud.com") // Shopify theme CDN
     );
   } catch {
     return false;
