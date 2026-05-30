@@ -2,7 +2,7 @@
 
 client_id = "0448bbb332c73ebe41f69192235e1bbc"
 name = "Shivook AI CRO"
-application_url = "https://shivook-ai-cro-production.up.railway.app"
+application_url = "https://shivook-ai-cro.fly.dev"
 embedded = true
 
 [build]
@@ -30,7 +30,7 @@ uri    = "/webhooks/app_subscriptions/update"
 #   uri    = "/webhooks/orders_paid"
 
 [app_proxy]
-url     = "https://shivook-ai-cro-production.up.railway.app"
+url     = "https://shivook-ai-cro.fly.dev"
 subpath = "cro"
 prefix  = "apps"
 
@@ -39,7 +39,7 @@ scopes = "read_orders,read_products,write_pixels,read_customer_events"
 
 [auth]
 redirect_urls = [
-  "https://shivook-ai-cro-production.up.railway.app/auth/callback",
-  "https://shivook-ai-cro-production.up.railway.app/auth/shopify/callback",
-  "https://shivook-ai-cro-production.up.railway.app/api/auth/callback",
+  "https://shivook-ai-cro.fly.dev/auth/callback",
+  "https://shivook-ai-cro.fly.dev/auth/shopify/callback",
+  "https://shivook-ai-cro.fly.dev/api/auth/callback",
 ]
