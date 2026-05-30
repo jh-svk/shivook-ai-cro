@@ -89,7 +89,19 @@ Format as clean markdown with a ### heading per friction point.`;
 async function synthesise(shopId: string): Promise<string> {
   const shop = await prisma.shop.findUnique({
     where: { id: shopId },
-    include: { knowledgeBase: { orderBy: { createdAt: "desc" }, take: 10 } },
+    include: {
+      knowledgeBase: {
+        orderBy: { createdAt: "desc" },
+        take: 10,
+        // Exclude the vector(1536) embedding column — pg driver can't deserialise it
+        select: {
+          id: true, result: true, pageType: true, elementType: true,
+          hypothesisText: true, liftPercentage: true, createdAt: true,
+          shopId: true, experimentId: true, segmentTargeted: true,
+          variantDescription: true, tags: true,
+        },
+      },
+    },
   });
   if (!shop) throw new Error(`Shop ${shopId} not found`);
 
@@ -165,11 +177,15 @@ async function runResearchSynthesis(shopId: string) {
 }
 
 export function startResearchSynthesisWorker() {
-  return new Worker<ResearchSynthesisJobData>(
+  const worker = new Worker<ResearchSynthesisJobData>(
     RESEARCH_SYNTHESIS_QUEUE,
     async (job: Job<ResearchSynthesisJobData>) => {
       await runResearchSynthesis(job.data.shopId);
     },
     { connection }
   );
+  worker.on("failed", (job, err) => {
+    console.error(`[researchSynthesis] job ${job?.id} failed:`, err?.message ?? err);
+  });
+  return worker;
 }
