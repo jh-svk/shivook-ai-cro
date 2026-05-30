@@ -14,6 +14,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { qaReviewQueue } from "./qaReview";
 import { hasPlanFeature } from "../lib/planGate.server";
 
+interface ThemeTokensShape {
+  cssVars?: Record<string, string>;
+  componentHtml?: Record<string, string>;
+}
+
 export const AUTO_BUILD_QUEUE = "auto-build";
 
 export interface AutoBuildJobData {
@@ -67,10 +72,7 @@ function buildUserPrompt(
   themeTokens: unknown
 ): string {
   const guardrails = (brandGuardrails as Record<string, unknown>) ?? {};
-  const tokens = themeTokens as {
-    cssVars?: Record<string, string>;
-    componentHtml?: Record<string, string>;
-  } | null;
+  const tokens = themeTokens as ThemeTokensShape | null;
 
   const hasCssVars =
     tokens?.cssVars != null && Object.keys(tokens.cssVars).length > 0;
@@ -147,14 +149,12 @@ async function designCritique(
   htmlPatch: string | null,
   cssPatch: string | null,
   jsPatch: string | null,
-  cssVars: Record<string, string>
+  cssVars: Record<string, string>,
+  client: Anthropic
 ): Promise<CritiqueResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || (!htmlPatch && !cssPatch)) {
+  if (!htmlPatch && !cssPatch) {
     return { passed: true, failedItems: [], specificFixes: [] };
   }
-
-  const client = new Anthropic({ apiKey });
 
   try {
     const response = await client.messages.create({
@@ -174,6 +174,7 @@ Rubric (check each — fail if violated):
 3. No introduced box-shadow, text-shadow, gradients, or transitions absent from token set
 4. Spacing uses relative units (rem, em, %) or CSS vars — no arbitrary px values
 5. No CSS class names that would conflict with Shopify theme namespacing
+6. No use of eval(), document.write(), or other dangerous JS patterns
 
 Store CSS custom properties:
 ${JSON.stringify(cssVars, null, 2)}
@@ -318,14 +319,12 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
   }
 
   // ── Design critique pass ──────────────────────────────────────────────────
-  const tokens = hypothesis.shop.themeTokens as {
-    cssVars?: Record<string, string>;
-  } | null;
+  const tokens = hypothesis.shop.themeTokens as ThemeTokensShape | null;
   const cssVars = tokens?.cssVars ?? {};
   const hasCssVars = Object.keys(cssVars).length > 0;
 
   if (hasCssVars) {
-    let critique = await designCritique(patches.htmlPatch ?? null, patches.cssPatch ?? null, patches.jsPatch ?? null, cssVars);
+    let critique = await designCritique(patches.htmlPatch ?? null, patches.cssPatch ?? null, patches.jsPatch ?? null, cssVars, client);
 
     if (!critique.passed) {
       console.log(
@@ -363,7 +362,7 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
           .replace(/\n?```$/, "");
         try {
           patches = JSON.parse(retryJsonStr);
-          critique = await designCritique(patches.htmlPatch ?? null, patches.cssPatch ?? null, patches.jsPatch ?? null, cssVars);
+          critique = await designCritique(patches.htmlPatch ?? null, patches.cssPatch ?? null, patches.jsPatch ?? null, cssVars, client);
           if (!critique.passed) {
             await prisma.hypothesis.update({
               where: { id: hypothesisId },
@@ -380,7 +379,16 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
           }
           console.log(`[autoBuild] design critique passed after retry for ${hypothesisId}`);
         } catch {
-          console.warn(`[autoBuild] retry JSON parse failed for ${hypothesisId} — using original patches`);
+          await prisma.hypothesis.update({
+            where: { id: hypothesisId },
+            data: { status: "qa_failed" },
+          });
+          await logOrchestrator(shopId, runId, "DESIGN_CRITIQUE", "failed", {
+            hypothesisId,
+            reason: "retry response was not valid JSON",
+          });
+          console.warn(`[autoBuild] retry JSON parse failed for ${hypothesisId} — marked qa_failed`);
+          return;
         }
       }
     } else {
