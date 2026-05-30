@@ -31,7 +31,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(fd.get("intent") ?? "save");
 
   if (intent === "resync_tokens") {
-    const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
     await extractThemeTokens(shop);
     return { success: true, message: "Theme tokens refreshed." };
   }
