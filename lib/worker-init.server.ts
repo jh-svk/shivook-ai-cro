@@ -13,21 +13,23 @@ export async function ensureWorkersStarted() {
   }
 
   try {
-    // Phase 2 workers only — Phase 3 workers (orchestrator, autoBuild,
-    // activationGate, qaReview, pmAgent, builderAgent) disabled to stay
-    // within Upstash free tier (500k commands/day). Enable when Phase 3 is active.
+    // Phase 2 workers + autoBuild (needed for hypothesis promotion).
+    // Orchestrator, activationGate, qaReview, pmAgent, builderAgent remain
+    // disabled to stay within Upstash free tier (500k commands/day).
     const [
       { startResultRefreshWorker },
       { startSchedulerWorker, registerSchedules },
       { startDataSyncWorker },
       { startResearchSynthesisWorker },
       { startHypothesisGeneratorWorker },
+      { startAutoBuildWorker },
     ] = await Promise.all([
       import("../jobs/resultRefresh"),
       import("../jobs/scheduler"),
       import("../jobs/dataSync"),
       import("../jobs/researchSynthesis"),
       import("../jobs/hypothesisGenerator"),
+      import("../jobs/autoBuild"),
     ]);
 
     startResultRefreshWorker();
@@ -35,9 +37,10 @@ export async function ensureWorkersStarted() {
     startDataSyncWorker();
     startResearchSynthesisWorker();
     startHypothesisGeneratorWorker();
+    startAutoBuildWorker();
     await registerSchedules();
 
-    console.log("[workers] Phase 2 BullMQ workers started (5 workers)");
+    console.log("[workers] Phase 2 BullMQ workers started (6 workers)");
   } catch (error) {
     console.error("[workers] failed to start workers", error);
     global.__croWorkersStarted = false;
