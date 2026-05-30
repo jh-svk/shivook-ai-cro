@@ -34,3 +34,4 @@ test-results/
 tests/.storefront-auth.json
 tests/check-proxy.mjs.worktrees
 .env.koyeb
+.superpowers/
