@@ -59,7 +59,7 @@ export function extractComponentHtml(html: string): ThemeTokens["componentHtml"]
   if (h1Match) components.heading = h1Match[0].slice(0, 500);
   else if (h2Match) components.heading = h2Match[0].slice(0, 500);
 
-  const cardMatch = html.match(/<div[^>]*class="[^"]*(?:product-card|card--standard|card--media)[^"]*"[^>]*>/i);
+  const cardMatch = html.match(/<div[^>]*class="[^"]*(?:card(?:--standard|--media|--product)?|product-card)[^"]*"[^>]*>/i);
   if (cardMatch) components.card = cardMatch[0].slice(0, 500);
 
   return components;
@@ -122,8 +122,9 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
     const sheetCss = await fetchLinkedStylesheets(html, domain);
     if (sheetCss) {
       const sheetVars = extractCssVarsFromHtml(`<style>${sheetCss}</style>`);
-      // Inline vars win on conflict (set after merging sheet vars)
-      cssVars = { ...sheetVars, ...cssVars };
+      // Stylesheet vars win on conflict — Shopify themes define :root vars
+      // in external stylesheets; these are "later" in the cascade
+      cssVars = { ...cssVars, ...sheetVars };
     }
 
     const componentHtml = extractComponentHtml(html);
