@@ -5,6 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
 import { encrypt } from "../../lib/crypto.server";
+import { extractThemeTokens } from "../../lib/themeTokenExtractor.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -26,6 +27,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
 
   const fd = await request.formData();
+
+  const intent = String(fd.get("intent") ?? "save");
+
+  if (intent === "resync_tokens") {
+    const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
+    await extractThemeTokens(shop);
+    return { success: true, message: "Theme tokens refreshed." };
+  }
 
   // Clarity settings
   const clarityProjectId  = String(fd.get("clarityProjectId") ?? "").trim();
@@ -163,6 +172,31 @@ export default function Settings() {
           </s-button>
         </s-section>
       </Form>
+
+      <s-section heading="Theme tokens">
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            Shivook AI CRO reads your store&apos;s CSS design tokens (colors, fonts, spacing) to ensure generated variants match your theme. Tokens refresh nightly. Use this button if you&apos;ve recently updated your theme.
+          </s-paragraph>
+          {shop.themeTokens ? (
+            <s-banner tone="success" heading="Tokens extracted">
+              <s-paragraph>
+                {Object.keys((shop.themeTokens as { cssVars?: Record<string, string> }).cssVars ?? {}).length} CSS variables loaded from your theme.
+              </s-paragraph>
+            </s-banner>
+          ) : (
+            <s-banner tone="warning" heading="No tokens yet">
+              <s-paragraph>Click below to extract your theme&apos;s design tokens.</s-paragraph>
+            </s-banner>
+          )}
+          <Form method="post">
+            <input type="hidden" name="intent" value="resync_tokens" />
+            <s-button type="submit" variant="secondary" {...(isSubmitting ? { loading: true } : {})}>
+              Re-sync theme tokens
+            </s-button>
+          </Form>
+        </s-stack>
+      </s-section>
     </s-page>
   );
 }
