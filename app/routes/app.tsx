@@ -27,9 +27,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       extractStoreBranding(shop).catch(() => {});
     }
 
-    // Redirect new installs to onboarding
+    // Redirect new installs to onboarding.
+    // Preserve host + shop params so authenticate.admin() can validate
+    // the embedded context on the next request (server-side redirect
+    // drops the id_token JWT, so the SDK falls back to these params).
     if (!shop.onboardingCompletedAt && !isOnboarding && !isBillingRoute) {
-      throw redirect("/app/onboarding");
+      const host = url.searchParams.get("host");
+      const shopParam = url.searchParams.get("shop") ?? session.shop;
+      const qs = host ? `?host=${encodeURIComponent(host)}&shop=${encodeURIComponent(shopParam)}` : "";
+      throw redirect(`/app/onboarding${qs}`);
     }
 
     subStatus = await getSubscriptionStatus(shop.id);
