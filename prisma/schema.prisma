@@ -37,6 +37,7 @@ model Shop {
   maxConcurrentTests     Int                @default(5)
   requireHumanApproval   Boolean            @default(false)
   brandGuardrails        Json?
+  themeTokens            Json?
   slackWebhookUrl        String?
   installedAt            DateTime           @default(now())
   timezone               String             @default("UTC")
