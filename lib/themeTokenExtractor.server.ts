@@ -70,22 +70,64 @@ export function extractComponentHtml(html: string): ThemeTokens["componentHtml"]
 
 async function fetchStorefrontHtml(shopDomain: string): Promise<string> {
   const storefrontPassword = process.env.STOREFRONT_PASSWORD;
-  const headers: Record<string, string> = {
+  const baseHeaders: Record<string, string> = {
     "User-Agent": "Shivook-CRO-Extractor/1.0",
     Accept: "text/html,application/xhtml+xml",
   };
-  if (storefrontPassword) {
-    headers["Storefront-Password"] = storefrontPassword;
+
+  const abortFetch = (url: string, init: RequestInit): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    return fetch(url, { ...init, signal: controller.signal }).finally(() =>
+      clearTimeout(timer)
+    );
+  };
+
+  // First attempt — works for non-password-protected stores
+  const firstRes = await abortFetch(`https://${shopDomain}/`, { headers: baseHeaders });
+
+  // If redirected to /password and we have a password, do the Shopify form POST
+  if (
+    storefrontPassword &&
+    (firstRes.url.includes("/password") || firstRes.redirected && firstRes.url.includes("/password") ||
+      firstRes.status === 302)
+  ) {
+    // Step 1: get the form page to capture session cookie
+    const pwPageRes = await abortFetch(`https://${shopDomain}/password`, {
+      headers: baseHeaders,
+    });
+    const setCookie = pwPageRes.headers.get("set-cookie") ?? "";
+    const cookie = setCookie.split(";")[0]; // take first key=value pair
+
+    // Step 2: POST the password
+    const formBody = new URLSearchParams({
+      form_type: "storefront_password",
+      utf8: "✓",
+      password: storefrontPassword,
+    });
+    const postRes = await abortFetch(`https://${shopDomain}/password`, {
+      method: "POST",
+      headers: {
+        ...baseHeaders,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Cookie: cookie,
+      },
+      body: formBody.toString(),
+      redirect: "manual",
+    });
+
+    // Step 3: follow the redirect with the session cookie
+    const redirectCookie =
+      postRes.headers.get("set-cookie")?.split(";")[0] ?? cookie;
+    const homepageRes = await abortFetch(`https://${shopDomain}/`, {
+      headers: { ...baseHeaders, Cookie: redirectCookie },
+    });
+    if (!homepageRes.ok) throw new Error(`HTTP ${homepageRes.status} after password auth`);
+    return homepageRes.text();
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`https://${shopDomain}/`, { headers, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status} fetching https://${shopDomain}/`);
-    return res.text();
-  } finally {
-    clearTimeout(timer);
-  }
+
+  if (!firstRes.ok) throw new Error(`HTTP ${firstRes.status} fetching https://${shopDomain}/`);
+  return firstRes.text();
 }
 
 function isSafeStylesheetUrl(url: string, shopDomain: string): boolean {
