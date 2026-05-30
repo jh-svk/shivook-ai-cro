@@ -21,30 +21,31 @@ export interface ThemeTokens {
 
 type ShopForExtraction = Pick<Shop, "id" | "shopifyDomain">;
 
+const FETCH_TIMEOUT_MS = 10_000;
+
 // ─── Pure functions (exported for testing) ───────────────────────────────────
 
-/** Extract all CSS custom properties from :root blocks in raw HTML */
-export function extractCssVarsFromHtml(html: string): Record<string, string> {
+/** Extract CSS custom properties from raw CSS text (no HTML) */
+export function extractCssVarsFromCss(css: string): Record<string, string> {
   const vars: Record<string, string> = {};
-
-  // Collect all <style> block contents
-  const styleContents: string[] = [];
-  const styleMatches = html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi);
-  for (const m of styleMatches) {
-    styleContents.push(m[1]);
-  }
-  const allCss = styleContents.join("\n");
-
-  // Extract :root { } blocks
-  const rootMatches = allCss.matchAll(/:root\s*\{([^}]+)\}/g);
+  const rootMatches = css.matchAll(/:root\s*\{([^}]+)\}/g);
   for (const block of rootMatches) {
     const varMatches = block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g);
     for (const v of varMatches) {
       vars[v[1].trim()] = v[2].trim();
     }
   }
-
   return vars;
+}
+
+/** Extract all CSS custom properties from :root blocks in raw HTML */
+export function extractCssVarsFromHtml(html: string): Record<string, string> {
+  const styleContents: string[] = [];
+  const styleMatches = html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi);
+  for (const m of styleMatches) {
+    styleContents.push(m[1]);
+  }
+  return extractCssVarsFromCss(styleContents.join("\n"));
 }
 
 /** Scrape first instance of known component patterns from HTML */
@@ -76,10 +77,30 @@ async function fetchStorefrontHtml(shopDomain: string): Promise<string> {
   if (storefrontPassword) {
     headers["Storefront-Password"] = storefrontPassword;
   }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://${shopDomain}/`, { headers, signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching https://${shopDomain}/`);
+    return res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-  const res = await fetch(`https://${shopDomain}/`, { headers });
-  if (!res.ok) throw new Error(`HTTP ${res.status} fetching https://${shopDomain}/`);
-  return res.text();
+function isSafeStylesheetUrl(url: string, shopDomain: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return (
+      hostname === shopDomain ||
+      hostname.endsWith(".shopifycdn.com") ||
+      hostname.endsWith(".shopify.com") ||
+      hostname.endsWith(".myshopify.com") ||
+      hostname.endsWith(".cdn.shopify.com")
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function fetchLinkedStylesheets(
@@ -92,13 +113,24 @@ async function fetchLinkedStylesheets(
   );
   for (const m of linkMatches) {
     const href = m[1];
-    if (href.startsWith("//")) urls.push("https:" + href);
-    else if (href.startsWith("/")) urls.push(`https://${shopDomain}${href}`);
-    else if (href.startsWith("http")) urls.push(href);
+    if (href.startsWith("//")) {
+      const full = "https:" + href;
+      if (isSafeStylesheetUrl(full, shopDomain)) urls.push(full);
+    } else if (href.startsWith("/")) {
+      urls.push(`https://${shopDomain}${href}`); // same-origin, always safe
+    } else if (href.startsWith("http")) {
+      if (isSafeStylesheetUrl(href, shopDomain)) urls.push(href);
+    }
   }
 
   const results = await Promise.allSettled(
-    urls.slice(0, 5).map((url) => fetch(url).then((r) => r.text()))
+    urls.slice(0, 5).map((url) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+      return fetch(url, { signal: ctrl.signal })
+        .then((r) => r.text())
+        .finally(() => clearTimeout(t));
+    })
   );
   return results
     .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
@@ -121,7 +153,7 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
     // Also try linked stylesheets (Shopify themes often put :root vars there)
     const sheetCss = await fetchLinkedStylesheets(html, domain);
     if (sheetCss) {
-      const sheetVars = extractCssVarsFromHtml(`<style>${sheetCss}</style>`);
+      const sheetVars = extractCssVarsFromCss(sheetCss);
       // Stylesheet vars win on conflict — Shopify themes define :root vars
       // in external stylesheets; these are "later" in the cascade
       cssVars = { ...cssVars, ...sheetVars };
