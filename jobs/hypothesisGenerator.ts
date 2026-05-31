@@ -119,7 +119,10 @@ async function generateHypotheses(
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    // 8192 comfortably fits ~20 detailed hypotheses. 4096 truncated the JSON
+    // array mid-string on wordier batches, which made JSON.parse throw and the
+    // whole run produced 0 hypotheses (report still showed "complete").
+    max_tokens: 8192,
     system: SYSTEM_PROMPT,
     messages: [
       {
@@ -134,7 +137,64 @@ async function generateHypotheses(
 
   // Strip markdown code fences if Claude wraps the JSON
   const raw = content.text.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
-  return JSON.parse(raw) as RawHypothesis[];
+  return parseHypothesisArray(raw, response.stop_reason);
+}
+
+/**
+ * Parse Claude's hypothesis array. If the JSON is invalid — most commonly
+ * because the response was truncated at max_tokens — salvage every COMPLETE
+ * object before the cut so we still return usable hypotheses instead of
+ * throwing the whole batch away (which previously produced 0 hypotheses).
+ */
+function parseHypothesisArray(raw: string, stopReason: string | null): RawHypothesis[] {
+  try {
+    return JSON.parse(raw) as RawHypothesis[];
+  } catch (err) {
+    const salvaged = salvageJsonArray(raw);
+    if (salvaged.length > 0) {
+      console.warn(
+        `[hypothesisGenerator] response ${stopReason === "max_tokens" ? "truncated" : "unparseable"} — salvaged ${salvaged.length} complete hypotheses`
+      );
+      return salvaged;
+    }
+    throw err;
+  }
+}
+
+/** Extract every complete top-level object from a (possibly truncated) JSON array string. */
+function salvageJsonArray(raw: string): RawHypothesis[] {
+  const start = raw.indexOf("[");
+  if (start === -1) return [];
+  const objects: RawHypothesis[] = [];
+  let depth = 0;
+  let objStart = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = start + 1; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (c === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        try {
+          objects.push(JSON.parse(raw.slice(objStart, i + 1)) as RawHypothesis);
+        } catch {
+          /* skip a malformed object */
+        }
+        objStart = -1;
+      }
+    }
+  }
+  return objects;
 }
 
 export async function runHypothesisGenerator(shopId: string, reportId: string) {
