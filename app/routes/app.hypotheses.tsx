@@ -94,13 +94,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     if (!hypothesis) return { error: "Hypothesis not found." };
 
-    // Fire the autonomous build: Claude generates brand-native HTML/CSS/JS patches,
-    // runs the design critique, creates a draft experiment, then chains to
-    // qaReview -> activationGate (which parks it in pending_approval).
+    // Mark as building BEFORE enqueueing so the worker (which sets "promoted"
+    // on success) can't be overwritten by this update, and so the Experiments
+    // dashboard can show it in its "Building variants" section.
+    await prisma.hypothesis.update({
+      where: { id: hypothesisId, shopId: shop.id },
+      data: { status: "building" },
+    });
     await enqueueAutoBuild(shop.id, hypothesisId);
     return {
       message:
-        "AI is generating a brand-native variant for this hypothesis. It will appear as a draft experiment (pending your approval) within a minute or two.",
+        "AI is generating a brand-native variant. Track its progress in the “Building variants” section of your Experiments dashboard — it'll move into the list automatically when ready.",
     };
   }
 

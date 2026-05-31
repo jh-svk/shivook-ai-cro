@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useLoaderData, useNavigation } from "react-router";
-import { useState } from "react";
+import { Form, useLoaderData, useNavigation, useRevalidator } from "react-router";
+import { useEffect, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -21,7 +21,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
 
   try {
-    const [experiments, orchestratorLogs] = await Promise.all([
+    const [experiments, orchestratorLogs, buildingHypotheses] = await Promise.all([
       prisma.experiment.findMany({
         where: { shopId: shop.id },
         orderBy: { createdAt: "desc" },
@@ -32,8 +32,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         orderBy: { startedAt: "desc" },
         take: 20,
       }),
+      // Hypotheses whose AI variant is currently being built.
+      prisma.hypothesis.findMany({
+        where: { shopId: shop.id, status: "building" },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, title: true },
+      }),
     ]);
-    return { experiments, orchestratorLogs };
+    return { experiments, orchestratorLogs, buildingHypotheses };
   } catch (error) {
     console.error("[app._index] failed to load experiments", error);
     return {
@@ -43,6 +49,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         >
       >,
       orchestratorLogs: [] as Awaited<ReturnType<typeof prisma.orchestratorLog.findMany>>,
+      buildingHypotheses: [] as { id: string; title: string }[],
     };
   }
 };
@@ -52,6 +59,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
   const fd = await request.formData();
   const intent = fd.get("intent");
+
+  if (intent === "reset_build") {
+    const hid = String(fd.get("hypothesisId"));
+    await prisma.hypothesis.updateMany({
+      where: { id: hid, shopId: shop.id, status: "building" },
+      data: { status: "backlog" },
+    });
+    return { reset: true };
+  }
+
   if (intent !== "bulk_delete") return { error: "Invalid action." };
 
   const ids = fd.getAll("ids[]").map(String).filter(Boolean);
@@ -113,9 +130,19 @@ function relativeTime(date: string): string {
 const DELETABLE = new Set(["draft", "concluded"]);
 
 export default function ExperimentsIndex() {
-  const { experiments, orchestratorLogs } = useLoaderData<typeof loader>();
+  const { experiments, orchestratorLogs, buildingHypotheses } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+
+  // Poll while variants are building so they appear in the list automatically.
+  const revalidator = useRevalidator();
+  useEffect(() => {
+    if (buildingHypotheses.length === 0) return;
+    const t = setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 4000);
+    return () => clearInterval(t);
+  }, [buildingHypotheses.length, revalidator]);
 
   const deletableIds = experiments
     .filter((e) => DELETABLE.has(e.status))
@@ -161,6 +188,36 @@ export default function ExperimentsIndex() {
       >
         AI hypotheses
       </s-button>
+
+      {buildingHypotheses.length > 0 && (
+        <s-section heading={`Building variants (${buildingHypotheses.length})`}>
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              The AI is generating brand-native variants for these hypotheses
+              (about a minute each). They’ll move into the experiments list below
+              automatically when ready — no need to refresh.
+            </s-paragraph>
+            {buildingHypotheses.map((h) => (
+              <s-box key={h.id} padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small">
+                  <s-stack direction="inline" gap="base">
+                    <s-badge tone="info">Building…</s-badge>
+                    <s-text>{h.title}</s-text>
+                  </s-stack>
+                  <progress style={{ width: "100%", height: "8px" }} />
+                  <Form method="post" style={{ display: "inline" }}>
+                    <input type="hidden" name="intent" value="reset_build" />
+                    <input type="hidden" name="hypothesisId" value={h.id} />
+                    <s-button type="submit" variant="tertiary">
+                      Cancel &amp; return to backlog
+                    </s-button>
+                  </Form>
+                </s-stack>
+              </s-box>
+            ))}
+          </s-stack>
+        </s-section>
+      )}
 
       {experiments.length === 0 ? (
         <s-section heading="No experiments yet">

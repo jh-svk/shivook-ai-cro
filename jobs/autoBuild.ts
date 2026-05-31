@@ -332,6 +332,10 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
   const allowed = await hasPlanFeature(shopId, "auto_build");
   if (!allowed) {
     console.log(`[autoBuild] shop ${shopId} does not have auto_build feature — skipping`);
+    // Don't leave a manually-triggered hypothesis stuck on the "building" loader.
+    await prisma.hypothesis
+      .updateMany({ where: { id: hypothesisId, shopId, status: "building" }, data: { status: "backlog" } })
+      .catch(() => {});
     return;
   }
 
