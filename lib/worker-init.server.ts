@@ -12,12 +12,6 @@ import { runAutoBuild, AUTO_BUILD_QUEUE } from "../jobs/autoBuild";
 import { runActivationGate, ACTIVATION_GATE_QUEUE } from "../jobs/activationGate";
 import { runOrchestrator, ORCHESTRATOR_QUEUE } from "../jobs/orchestrator";
 import { runQaReview, QA_REVIEW_QUEUE } from "../jobs/qaReview";
-// NOTE: pmAgent + builderAgent are intentionally NOT enabled. builderAgent is a fully
-// autonomous coding agent that clones the repo, writes code, and opens + AUTO-MERGES PRs
-// in response to merchant feedback text. That self-modifying pipeline must be turned on
-// deliberately (with safeguards), never as part of routine worker startup.
-// import { processPmAgent, PM_AGENT_QUEUE } from "../jobs/pmAgent";
-// import { processBuilderAgent, BUILDER_AGENT_QUEUE } from "../jobs/builderAgent";
 
 declare global {
   // eslint-disable-next-line no-var
