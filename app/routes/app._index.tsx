@@ -79,11 +79,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { id: { in: ids }, shopId: shop.id },
     select: { id: true, status: true },
   });
-  const deletable = experiments
-    .filter((e) => e.status !== "active" && e.status !== "paused")
-    .map((e) => e.id);
+  // Any experiment the shop owns can be deleted, regardless of status.
+  const deletable = experiments.map((e) => e.id);
 
-  if (deletable.length === 0) return { error: "No deletable experiments selected (active/paused tests cannot be deleted)." };
+  if (deletable.length === 0) return { error: "No experiments selected." };
 
   try {
     // Clear all rows referencing these experiments before deleting (FK order).
@@ -127,8 +126,6 @@ function relativeTime(date: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-const DELETABLE = new Set(["draft", "concluded"]);
-
 export default function ExperimentsIndex() {
   const { experiments, orchestratorLogs, buildingHypotheses } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
@@ -144,9 +141,7 @@ export default function ExperimentsIndex() {
     return () => clearInterval(t);
   }, [buildingHypotheses.length, revalidator]);
 
-  const deletableIds = experiments
-    .filter((e) => DELETABLE.has(e.status))
-    .map((e) => e.id);
+  const deletableIds = experiments.map((e) => e.id);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -279,7 +274,7 @@ export default function ExperimentsIndex() {
             </s-table-header-row>
             <s-table-body>
               {experiments.map((exp) => {
-                const isDeletable = DELETABLE.has(exp.status);
+                const isDeletable = true;
                 return (
                   <s-table-row key={exp.id}>
                     <s-table-cell>

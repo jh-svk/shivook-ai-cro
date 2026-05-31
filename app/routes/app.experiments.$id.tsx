@@ -5,7 +5,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { canActivateExperiment } from "../../lib/concurrentTestManager.server";
-import { formatStatus } from "../../lib/formatText";
+import { formatStatus, humanizeMetric, humanizeMetricsInText } from "../../lib/formatText";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -88,9 +88,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       select: { status: true },
     });
     if (!experiment) return { error: "Experiment not found." };
-    if (experiment.status === "active") {
-      return { error: "End the test before deleting it." };
-    }
     try {
       // Remove every row that references this experiment before deleting it,
       // otherwise foreign-key constraints block the delete (this is why
@@ -263,7 +260,7 @@ export default function ExperimentDetail() {
               {formatStatus(experiment.status)}
             </s-badge>
           </s-stack>
-          <s-paragraph>{experiment.hypothesis}</s-paragraph>
+          <s-paragraph>{humanizeMetricsInText(experiment.hypothesis)}</s-paragraph>
           {actions.length > 0 && (
             <s-stack direction="inline" gap="base">
               {actions.map((a) => (
@@ -596,7 +593,7 @@ export default function ExperimentDetail() {
           </s-paragraph>
           <s-paragraph>
             <s-text>Target metric: </s-text>
-            {experiment.targetMetric.replace(/_/g, " ")}
+            {humanizeMetric(experiment.targetMetric)}
           </s-paragraph>
           <s-paragraph>
             <s-text>Traffic split: </s-text>

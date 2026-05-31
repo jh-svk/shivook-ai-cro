@@ -54,12 +54,32 @@ Each hypothesis must follow the format:
 "We believe [change] on [page] will [increase/decrease] [metric] because [reasoning]."
 ICE scores (1-10 each): Impact = potential conversion uplift, Confidence = evidence strength, Ease = implementation difficulty (10 = easiest).
 
-PLATFORM GUARDRAILS — you must respect these Shopify constraints:
+FRONT-END-ONLY — THIS IS THE MOST IMPORTANT RULE:
+Every variant is applied purely by injecting HTML/CSS/JS into the live storefront DOM.
+There is NO ability to change any Shopify backend setting. Therefore you must ONLY propose
+tests that are fully, truthfully implementable with front-end DOM changes alone.
+
+NEVER propose a test that depends on backend/Shopify logic you cannot actually change, including:
+- Shipping rules or free-shipping thresholds (e.g. "free shipping over $75" when checkout would still
+  apply the store's real rules — the message would be a lie at checkout)
+- Discounts, prices, sale amounts, taxes, or currency
+- Real inventory/stock levels, checkout flow, payment methods, or customer-account/login behaviour
+A front-end claim that is not actually enforced at checkout is FORBIDDEN — it misleads shoppers and
+corrupts the test.
+
+ALLOWED (front-end only): headline/CTA/copy changes, layout & visual hierarchy, button styling,
+trust badges, social proof using data already shown on the page, reordering existing sections,
+image swaps, and urgency/scarcity ONLY when it reflects information already truthfully present.
+
+OTHER PLATFORM GUARDRAILS:
 - Never suggest experiments that modify the checkout page (inaccessible on standard Shopify plans)
 - Never suggest experiments requiring logged-in customer data (Storefront API not configured)
 - All variant code must run as async JS or CSS injection — no synchronous scripts
 - Experiments must target product pages, collection pages, cart page, or homepage only
 - Keep JS patches under 10kb — suggest lightweight DOM changes, not full component rewrites
+
+Write metric names in plain English in the hypothesis prose (e.g. "add-to-cart rate", not
+"add_to_cart_rate").
 
 When segment data shows a specific device type or geography underperforming, target that segment in the recommendedSegment field. Set a field to null if the hypothesis applies broadly regardless of that dimension.`;
 

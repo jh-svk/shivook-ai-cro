@@ -9,7 +9,7 @@ import { enqueueDataSync } from "../../jobs/dataSync";
 import { enqueueResearchSynthesis } from "../../jobs/researchSynthesis";
 import { hasPlanFeature } from "../../lib/planGate.server";
 import { enqueueAutoBuild } from "../../jobs/autoBuild";
-import { formatStatus, titleCase } from "../../lib/formatText";
+import { formatStatus, titleCase, humanizeMetricsInText } from "../../lib/formatText";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -27,7 +27,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
   ]);
 
-  return { hypotheses, latestReport, shopId: shop.id };
+  // How many hypotheses belong to the latest report. Used to keep the progress
+  // indicator alive across refreshes until the hypotheses are actually written
+  // (they're generated in a follow-up job a few seconds after the report finishes).
+  const latestReportHypCount = latestReport
+    ? hypotheses.filter((h) => h.reportId === latestReport.id).length
+    : 0;
+
+  return { hypotheses, latestReport, latestReportHypCount, shopId: shop.id };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -140,7 +147,7 @@ function iceLabel(score: number): { label: string; tone: "success" | "warning" |
 }
 
 export default function HypothesesPage() {
-  const { hypotheses, latestReport } = useLoaderData<typeof loader>();
+  const { hypotheses, latestReport, latestReportHypCount } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -155,20 +162,28 @@ export default function HypothesesPage() {
   const isGenerating =
     navigation.state !== "idle" && navigation.formData?.get("intent") === "generate";
   const reportPending = latestReport?.status === "pending";
+  const reportFailed = latestReport?.status === "failed";
+  const reportFresh =
+    !!latestReport &&
+    Date.now() - new Date(latestReport.generatedAt).getTime() < 5 * 60 * 1000;
+  // The report can finish a few seconds BEFORE its hypotheses are written (they
+  // run in a follow-up job). Keep waiting in that window so they don't appear
+  // to vanish — this also survives a page refresh because it's derived from the
+  // loader, not from in-memory state.
+  const awaitingHypotheses = reportFresh && !reportFailed && latestReportHypCount === 0;
 
   const [researching, setResearching] = useState(false);
   const [, setTick] = useState(0); // 1s heartbeat to re-render the elapsed timer
   const startRef = useRef<number | null>(null);
-  const baselineBacklogRef = useRef<number>(0);
 
-  // Start when a generate is submitted, or when a pending report is observed
+  // Start on submit, while the report is pending, or while we're still waiting
+  // for the hypotheses to be written.
   useEffect(() => {
-    if ((isGenerating || reportPending) && !researching) {
+    if ((isGenerating || reportPending || awaitingHypotheses) && !researching) {
       setResearching(true);
       startRef.current = Date.now();
-      baselineBacklogRef.current = backlog.length;
     }
-  }, [isGenerating, reportPending, researching, backlog.length]);
+  }, [isGenerating, reportPending, awaitingHypotheses, researching]);
 
   // While researching: poll the loader every 4s + tick the timer every 1s
   useEffect(() => {
@@ -184,17 +199,15 @@ export default function HypothesesPage() {
     };
   }, [researching, revalidator]);
 
-  // Stop when new hypotheses arrive, the report fails, or we time out (~6 min)
+  // Stop once the hypotheses have actually landed, the report failed, or we time out.
   useEffect(() => {
     if (!researching) return;
-    const grew = backlog.length > baselineBacklogRef.current;
-    const failed = latestReport?.status === "failed";
     const elapsed = startRef.current ? (Date.now() - startRef.current) / 1000 : 0;
-    if (grew || failed || elapsed > 360) {
+    if (latestReportHypCount > 0 || reportFailed || elapsed > 360) {
       setResearching(false);
       startRef.current = null;
     }
-  }, [researching, backlog.length, latestReport?.status]);
+  }, [researching, latestReportHypCount, reportFailed]);
 
   const elapsedSec =
     researching && startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0;
@@ -358,7 +371,7 @@ export default function HypothesesPage() {
                         </s-stack>
                       );
                     })()}
-                    <s-paragraph>{h.hypothesis}</s-paragraph>
+                    <s-paragraph>{humanizeMetricsInText(h.hypothesis)}</s-paragraph>
                     <s-stack direction="inline" gap="base">
                       <s-text>
                         Impact {h.iceImpact} · Confidence {h.iceConfidence} · Ease{" "}
