@@ -1,5 +1,4 @@
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
@@ -24,12 +23,11 @@ export interface BuilderAgentJobData {
   shopId: string;
 }
 
-export const builderAgentQueue = new Queue<BuilderAgentJobData>(BUILDER_AGENT_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 1,
-  },
-});
+export async function enqueueBuilderAgent(feedbackId: string, shopId: string): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(BUILDER_AGENT_QUEUE, { feedbackId, shopId }, { retryLimit: 1, retryDelay: 60, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[builderAgent] send returned null for feedback ${feedbackId} — job blocked`);
+}
 
 const BUILDER_SYSTEM_PROMPT = `You are a senior TypeScript developer implementing changes on "Shivook AI CRO" — a Shopify A/B testing app.
 Stack: Shopify Remix + Polaris, Prisma/Postgres, BullMQ/Redis, Railway hosting.
@@ -130,8 +128,7 @@ async function runAgenticLoop(
   throw new Error(`Builder agent exceeded ${MAX_ITERATIONS} iterations`);
 }
 
-async function processBuilderAgent(job: Job<BuilderAgentJobData>): Promise<void> {
-  const { feedbackId, shopId } = job.data;
+export async function processBuilderAgent(feedbackId: string, shopId: string): Promise<void> {
   const cloneDir = `/tmp/builder-${feedbackId}`;
 
   const feedbackRequest = await prisma.feedbackRequest.findFirst({
@@ -268,10 +265,3 @@ ${errorMessage}
   }
 }
 
-export function startBuilderAgentWorker() {
-  return new Worker<BuilderAgentJobData>(BUILDER_AGENT_QUEUE, processBuilderAgent, {
-    connection,
-    concurrency: 1,
-    lockDuration: 1_800_000, // 30 minutes
-  });
-}
