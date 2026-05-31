@@ -1,5 +1,4 @@
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import { fetchGA4Snapshot, type GA4Config } from "../lib/connectors/ga4.server";
 import { fetchShopifyFunnelSnapshot } from "../lib/connectors/shopifyAdmin.server";
 import { fetchClaritySnapshot, type ClarityConfig } from "../lib/connectors/clarity.server";
@@ -12,15 +11,12 @@ export interface DataSyncJobData {
   shopId: string;
 }
 
-export const dataSyncQueue = new Queue<DataSyncJobData>(DATA_SYNC_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 10_000 },
-  },
-});
+export async function enqueueDataSync(shopId: string): Promise<void> {
+  const boss = await getBoss();
+  await boss.send(DATA_SYNC_QUEUE, { shopId }, { retryLimit: 3, retryDelay: 10 });
+}
 
-async function runDataSync(shopId: string) {
+export async function runDataSync(shopId: string) {
   const shop = await prisma.shop.findUnique({
     where: { id: shopId },
     include: { dataSources: true },
@@ -92,12 +88,3 @@ async function runDataSync(shopId: string) {
   console.log(`[dataSync] completed for shop ${shop.shopifyDomain}`);
 }
 
-export function startDataSyncWorker() {
-  return new Worker<DataSyncJobData>(
-    DATA_SYNC_QUEUE,
-    async (job: Job<DataSyncJobData>) => {
-      await runDataSync(job.data.shopId);
-    },
-    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
-  );
-}

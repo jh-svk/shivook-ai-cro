@@ -7,12 +7,11 @@
  * Requires ANTHROPIC_API_KEY in environment.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchPlatformInsights } from "../lib/knowledgeBase.server";
-import { hypothesisGeneratorQueue } from "./hypothesisGenerator";
+import { enqueueHypothesisGenerator } from "./hypothesisGenerator";
 
 export const RESEARCH_SYNTHESIS_QUEUE = "research-synthesis";
 
@@ -20,16 +19,10 @@ export interface ResearchSynthesisJobData {
   shopId: string;
 }
 
-export const researchSynthesisQueue = new Queue<ResearchSynthesisJobData>(
-  RESEARCH_SYNTHESIS_QUEUE,
-  {
-    connection,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: { type: "exponential", delay: 15_000 },
-    },
-  }
-);
+export async function enqueueResearchSynthesis(shopId: string): Promise<void> {
+  const boss = await getBoss();
+  await boss.send(RESEARCH_SYNTHESIS_QUEUE, { shopId }, { retryLimit: 3, retryDelay: 15 });
+}
 
 function buildSystemPrompt(shopDomain: string): string {
   return `You are a senior conversion rate optimisation analyst for the Shopify store "${shopDomain}".
@@ -137,7 +130,7 @@ async function synthesise(shopId: string): Promise<string> {
   return content.text;
 }
 
-async function runResearchSynthesis(shopId: string) {
+export async function runResearchSynthesis(shopId: string) {
   const reportRecord = await prisma.researchReport.create({
     data: {
       shopId,
@@ -160,10 +153,7 @@ async function runResearchSynthesis(shopId: string) {
 
     console.log(`[researchSynthesis] report complete for shop ${shopId}`);
 
-    await hypothesisGeneratorQueue.add(`gen-${shopId}`, {
-      shopId,
-      reportId: reportRecord.id,
-    });
+    await enqueueHypothesisGenerator(shopId, reportRecord.id);
     console.log(`[researchSynthesis] enqueued hypothesis generator for report ${reportRecord.id}`);
 
     return reportRecord.id;
@@ -176,16 +166,3 @@ async function runResearchSynthesis(shopId: string) {
   }
 }
 
-export function startResearchSynthesisWorker() {
-  const worker = new Worker<ResearchSynthesisJobData>(
-    RESEARCH_SYNTHESIS_QUEUE,
-    async (job: Job<ResearchSynthesisJobData>) => {
-      await runResearchSynthesis(job.data.shopId);
-    },
-    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
-  );
-  worker.on("failed", (job, err) => {
-    console.error(`[researchSynthesis] job ${job?.id} failed:`, err?.message ?? err);
-  });
-  return worker;
-}

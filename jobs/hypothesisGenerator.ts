@@ -8,8 +8,7 @@
  * Requires ANTHROPIC_API_KEY in environment.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchPlatformInsights } from "../lib/knowledgeBase.server";
@@ -21,16 +20,10 @@ export interface HypothesisGeneratorJobData {
   reportId: string;
 }
 
-export const hypothesisGeneratorQueue = new Queue<HypothesisGeneratorJobData>(
-  HYPOTHESIS_GENERATOR_QUEUE,
-  {
-    connection,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: { type: "exponential", delay: 15_000 },
-    },
-  }
-);
+export async function enqueueHypothesisGenerator(shopId: string, reportId: string): Promise<void> {
+  const boss = await getBoss();
+  await boss.send(HYPOTHESIS_GENERATOR_QUEUE, { shopId, reportId }, { retryLimit: 3, retryDelay: 15 });
+}
 
 const PAGE_TYPES = ["product", "collection", "cart", "homepage", "any"] as const;
 const ELEMENT_TYPES = ["headline", "cta", "image", "layout", "trust", "price", "other"] as const;
@@ -142,7 +135,7 @@ async function generateHypotheses(
   return JSON.parse(raw) as RawHypothesis[];
 }
 
-async function runHypothesisGenerator(shopId: string, reportId: string) {
+export async function runHypothesisGenerator(shopId: string, reportId: string) {
   const hypotheses = await generateHypotheses(shopId, reportId);
 
   const rows = hypotheses.map((h) => ({
@@ -167,12 +160,3 @@ async function runHypothesisGenerator(shopId: string, reportId: string) {
   console.log(`[hypothesisGenerator] wrote ${rows.length} hypotheses for shop ${shopId}`);
 }
 
-export function startHypothesisGeneratorWorker() {
-  return new Worker<HypothesisGeneratorJobData>(
-    HYPOTHESIS_GENERATOR_QUEUE,
-    async (job: Job<HypothesisGeneratorJobData>) => {
-      await runHypothesisGenerator(job.data.shopId, job.data.reportId);
-    },
-    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
-  );
-}
