@@ -1,105 +1,91 @@
-# CRO App — Phase 1 Build Brief
+# Shivook AI CRO
 
-## What we are building
-A Shopify app that lets merchants manually create and run A/B tests on their storefront. Variants are injected via Shopify Theme App Extensions. Conversion events are tracked via a storefront pixel and order webhooks. Results are shown in a dashboard inside the app.
+A Shopify app that runs continuous A/B tests on merchant storefronts. Variants are injected via a Theme App Extension; conversion events flow in via a Web Pixel + the orders/paid webhook; an autonomous Claude-powered pipeline researches the store, generates hypotheses, builds brand-native variants, runs them, and decides winners.
 
-This is Phase 1 of a larger autonomous CRO agent. Build clean, modular code that will be easy to extend in later phases. Do not over-engineer for features that are not in this brief.
+## Status
+Built and deployed. All four original phases (foundation → AI hypotheses → autonomous pipeline → multi-tenant SaaS) are live.
+
+- **Live app:** https://shivook-ai-cro.fly.dev
+- **GitHub:** https://github.com/jh-svk/shivook-ai-cro
+- **Dev store:** shivook-team.myshopify.com
 
 ## Stack
-- Shopify app: Remix (latest) via Shopify CLI
-- UI: Shopify Polaris
-- Database: Postgres via Prisma
-- Variant injection: Shopify Theme App Extension (not Script Tags)
-- Event tracking: Shopify Web Pixel Extension + Order webhooks
-- Job queue: BullMQ with Redis (for scheduled jobs — not needed heavily in phase 1 but set it up now)
-- Hosting: Railway (Postgres + Redis + app all in one project)
-- Auth: Shopify OAuth via @shopify/shopify-app-remix
+- App: React Router 7 (Shopify Remix template) + Polaris + App Bridge
+- DB: **Neon Postgres** (pgvector for knowledge base). Pooled `DATABASE_URL` for the app; `DATABASE_URL_UNPOOLED` for migrations + workers
+- Job queue: **pg-boss** (Postgres-backed — no Redis). Workers live in `lib/worker-init.server.ts`; jobs in `/jobs`
+- Stats: **Bayesian** Beta-Binomial / Monte-Carlo in `lib/stats.ts` (95% probability-to-beat-control + min-runtime gate)
+- AI: Anthropic SDK. Sonnet for generation, Haiku for the design-critique pass
+- Storefront: Theme App Extension (`extensions/variant-injector`) + Web Pixel (`extensions/cro-pixel`)
+- Hosting: **Fly.io** (Amsterdam, 2 VMs). Migrations applied automatically on container start by `npm run setup`
+- Auth + billing: `@shopify/shopify-app-react-router` + Shopify Managed Pricing
+- Local secrets in `.env` (gitignored). Prod secrets in Fly. `~/.env.global` has master API keys
 
-## Non-negotiables
-- Every database table must have shop_id for multi-tenancy from day one
-- Variant injection must be lazy loaded and add less than 50ms to LCP
-- No test can receive less than a 50/50 traffic split in phase 1
-- All Shopify API calls must handle rate limiting gracefully
-- Environment variables for everything sensitive — no hardcoded values
+## Non-negotiables (architectural)
+- **Every table has `shopId`** for multi-tenancy. Verify before adding new tables
+- **Variant injection must not block render** — Theme Extension is async/defer, lazy-loads, adds < 50ms to LCP
+- **No PII in events ever** — visitor/session IDs are FNV-hashed at the storefront before transmission
+- **All Shopify API calls** handle 429 with exponential backoff
+- **All pg-boss jobs** have a `retryLimit` (typically 2–3)
+- **No hardcoded secrets** — env vars only
 
-## Folder structure to follow
-/app              Remix routes and UI
-/app/routes       All route files
-/app/components   Reusable Polaris components
-/extensions       Shopify theme and pixel extensions
-/prisma           Schema and migrations
-/jobs             BullMQ job definitions (scaffold only in phase 1)
-/lib              Shared utilities, API clients, helpers
+## Folder structure
+```
+/app              React Router routes, components, server entry
+/app/routes       All routes (merchant UI under app.*, public under api.*, webhooks.*)
+/app/components   Shared Polaris components (CodeEditor, etc.)
+/extensions       Shopify theme + pixel extensions (deployed separately via `shopify app deploy`)
+/prisma           Schema + migrations
+/jobs             pg-boss workers (orchestrator, autoBuild, qaReview, activationGate, dataSync, resultRefresh, …)
+/lib              Shared libs: stats, planGate, pgboss singleton, theme-token extractor, knowledge base, connectors
+/scripts          Dev/operational scripts (dryRunVariant, seedDemo, screenshot)
+/docs/superpowers Historical migration plans (don't rely on as current truth)
+```
 
-## Database tables for phase 1
-Build exactly these tables and no others:
-- shops
-- experiments
-- variants
-- events
-- results
-
-Full field definitions are in SCHEMA.md.
+## Database
+Schema lives in `prisma/schema.prisma`. Authoritative — read it directly. Key tables: `shops`, `experiments`, `variants`, `events`, `results`, `hypotheses`, `research_reports`, `segments`, `orchestrator_log`, `knowledge_base`, `platform_learning`, `subscriptions`, `data_sources`.
 
 ## Experiment lifecycle
-DRAFT → ACTIVE → PAUSED → CONCLUDED
+`DRAFT → ACTIVE → PAUSED → CONCLUDED`
 
-When REQUIRE_HUMAN_APPROVAL=true, auto-built experiments land in:
-DRAFT → PENDING_APPROVAL → ACTIVE → PAUSED → CONCLUDED
-
-## Environment variables (Phase 3 additions)
-- MAX_CONCURRENT_TESTS: max active experiments per shop (default 20)
-- REQUIRE_HUMAN_APPROVAL: if "true" (default), auto-built experiments require merchant approval before activating
+When `REQUIRE_HUMAN_APPROVAL=true` (default), autonomously-built experiments land in `PENDING_APPROVAL` first and require merchant Approve.
 
 Transitions:
-- DRAFT to ACTIVE: merchant clicks Activate in the dashboard
-- ACTIVE to PAUSED: merchant clicks Pause
-- PAUSED to ACTIVE: merchant clicks Resume
-- ACTIVE to CONCLUDED: merchant clicks End Test, or max_runtime_days reached
-- Any state to CONCLUDED: if guardrail metrics trip (AOV drops > 3%)
+- Manual: merchant clicks Activate / Pause / Resume / End / Approve / Reject in `/app/experiments/:id`
+- Auto-conclude (in `jobs/resultRefresh.ts`, hourly): `aov_tripped` guardrail (treatment AOV < control × 0.97) OR Bayesian `probToBeatControl ≥ 0.95` after `minRuntimeDays`
 
-## Variant injection behaviour
-The Theme App Extension block runs on every storefront page load.
-It must:
-1. Identify the current page type (product / collection / cart / homepage / other)
-2. Query active experiments for this shop that target this page type
-3. Assign the visitor to control or treatment using a stable hash of their session ID (same visitor always sees the same variant)
-4. Apply the variant HTML/CSS/JS patch via DOM manipulation
-5. Fire a view event back to the app
-6. Do all of this in under 50ms and never block rendering
+## Storefront contract
+The Theme App Extension on every page load:
+1. Detects page type (product / collection / cart / homepage / other)
+2. Fetches active experiments via `/apps/cro/api/experiments` (App Proxy + HMAC)
+3. Stable-hashes visitor → control or treatment via FNV-1a (assignment stored in localStorage, sticky for experiment lifetime)
+4. Applies HTML/CSS/JS patch via DOM
+5. Fires `view` to `/apps/cro/api/events` via `sendBeacon`
 
-Visitor assignment must be sticky. Once assigned to a variant, that visitor sees the same variant for the lifetime of the experiment. Store the assignment in localStorage keyed by experiment ID.
+The Web Pixel covers `add_to_cart` + `checkout_started`. `purchase` is recorded via the `orders/paid` webhook (joined on `checkoutToken`). **All three conversion events are currently gated behind Shopify Protected Customer Data approval** — until granted, only `view` events arrive from real traffic.
 
-## Event tracking
-Track these four event types:
-- view: fired when a variant is displayed
-- add_to_cart: fired on add to cart action
-- checkout_started: fired on checkout initiation
-- purchase: fired via order webhook (most reliable signal)
+## Code editor
+HTML/CSS/JS variant editors in `/app/experiments/new` use CodeMirror (lazy-loaded). Syntax highlighting only — the code is stored as text and executed only by the Theme Extension on the storefront. A static blocklist (`eval`, `document.cookie`, etc.) rejects dangerous JS at submit time.
 
-Events must record: experiment_id, variant_id, visitor_id (hashed), session_id, event_type, revenue (purchases only), occurred_at. No PII. Ever.
-
-## Results calculation
-Refresh results once per hour via a BullMQ job. Phase 1 uses frequentist statistics (chi-squared for conversion rate). Calculate: visitors, conversions, conversion rate, relative lift, and a simple significance indicator (p-value < 0.05 = significant). Phase 2 will replace this with Bayesian — keep the stats logic in its own isolated module at /lib/stats.ts so it is easy to swap out.
-
-## Dashboard pages to build
-1. /app — Home: list of all experiments with status badges and key metrics at a glance
-2. /app/experiments/new — Create experiment: page type selector, element type, hypothesis statement, control/treatment code editor, traffic split slider, target metric picker, max runtime setting
-3. /app/experiments/:id — Experiment detail: results chart, variant previewer, event timeline, activate/pause/end controls
-4. /app/settings — Shop settings: brand guardrails (JSON editor), Slack webhook URL, approval preferences (for phase 3)
-
-## Code editor in the create experiment form
-Use CodeMirror for the HTML/CSS/JS variant editors. Syntax highlighting only — no execution in the dashboard. The actual code is stored as text in the database and executed only in the Theme App Extension on the storefront.
+## AI variant generation (`jobs/autoBuild.ts`)
+Sonnet generates HTML/CSS/JS patches **constrained by the store's extracted CSS custom properties** (via `lib/themeTokenExtractor.server.ts`), then Haiku runs a design-critique pass that enforces no hardcoded colors/fonts. On critique fail, autoBuild retries once with the feedback, then either passes (creates draft) or marks the hypothesis `qa_failed`. The "AI Generate variant" button on `/app/hypotheses` is the on-demand trigger; the 6-hourly orchestrator is the autonomous trigger.
 
 ## Error handling standards
-- All Prisma queries wrapped in try/catch with structured error logging
-- All Shopify API calls use exponential backoff on 429s
-- BullMQ jobs must have retry logic with max 3 attempts
-- Never show raw error messages to merchants in the UI
+- All Prisma calls wrapped in try/catch with structured logs
+- All Shopify API calls: exponential backoff on 429
+- pg-boss workers: `retryLimit` on every queue
+- Never surface raw error messages to merchants — show actionable UI text
 
-## What to build first — start here
-Step 1: Scaffold the Remix app using Shopify CLI
-Step 2: Set up Prisma with the schema from SCHEMA.md and run the first migration
-Step 3: Show me the folder structure and confirm auth is working before writing any UI code
+## Working on this codebase
+- `npm run dev` — Shopify CLI dev server
+- `npm run build` — production Vite build
+- `npm run typecheck` — must pass before committing
+- `npm run test:unit` — vitest
+- `npm run test:variant` — dry-run AI variant generation harness (writes nothing)
+- `flyctl deploy -a shivook-ai-cro` — deploy
+- Migrations: edit `prisma/schema.prisma`, run `npx prisma migrate dev --name <…> --create-only`, commit. They apply automatically on container start.
 
-Do not proceed past step 3 without my confirmation.
+## Things that are NOT here (intentional)
+- No BullMQ, no Redis (migrated to pg-boss)
+- No Railway (migrated to Fly + Neon)
+- No autonomous "merchant feedback → auto-PR" agent (was `jobs/pmAgent.ts` + `jobs/builderAgent.ts`, removed — too dangerous to leave armed)
+- No frequentist chi-squared (Bayesian replaced it)
