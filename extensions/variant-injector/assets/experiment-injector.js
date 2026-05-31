@@ -5,6 +5,7 @@
   var LS_VISITOR    = 'cro_visitor_id';
   var LS_ASSIGN_PFX = 'cro_assign_';
   var LS_VID_PFX    = 'cro_vid_';
+  var LS_ENROLLED   = 'cro_enrolled_experiment'; // the ONE test this visitor is in
   var SS_SESSION    = 'cro_session_id';
 
   // ── Stable 32-bit FNV-1a hash ──────────────────────────────────────────────
@@ -256,29 +257,58 @@
       .then(function (data) {
       if (!data || !Array.isArray(data.experiments)) return;
 
-      data.experiments.forEach(function (exp) {
-        // Skip experiments this visitor doesn't match
-        if (!matchesSegment(exp.segment, ctx)) return;
+      var pageExps  = data.experiments;                                   // current page, with variants
+      var allActive = Array.isArray(data.allActive) ? data.allActive : null;
 
-        var variantType = assignVariant(rawVisitorId, exp.id);
+      // Mutual exclusion: a visitor is enrolled in AT MOST ONE experiment they
+      // match (by segment), and stays in it for its lifetime. Two experiments
+      // only "overlap" when a single visitor matches both — so this guarantees
+      // no visitor is ever exposed to two interacting tests, while different
+      // visitors still populate different tests based on their segment.
 
-        var variant = null;
-        for (var i = 0; i < exp.variants.length; i++) {
-          if (exp.variants[i].type === variantType) { variant = exp.variants[i]; break; }
+      // Release the visitor if their enrolled test is no longer active.
+      var enrolledId = lsGet(LS_ENROLLED) || null;
+      if (enrolledId && allActive) {
+        var stillActive = false;
+        for (var a = 0; a < allActive.length; a++) {
+          if (allActive[a].id === enrolledId) { stillActive = true; break; }
         }
-        if (!variant) return;
+        if (!stillActive) { enrolledId = null; lsSet(LS_ENROLLED, ''); }
+      }
 
-        lsSet(LS_VID_PFX + exp.id, variant.id);
+      var exp = null;
+      if (enrolledId) {
+        // Already committed — only act if the enrolled test lives on this page.
+        for (var i = 0; i < pageExps.length; i++) {
+          if (pageExps[i].id === enrolledId) { exp = pageExps[i]; break; }
+        }
+      } else {
+        // Not yet enrolled — commit to ONE matched test on this page (the
+        // choice is deterministic per visitor, so it's stable + evenly split).
+        var matchedHere = pageExps.filter(function (e) { return matchesSegment(e.segment, ctx); });
+        if (matchedHere.length > 0) {
+          matchedHere.sort(function (x, y) { return x.id < y.id ? -1 : x.id > y.id ? 1 : 0; });
+          exp = matchedHere[fnv32a(rawVisitorId + '|cro_enroll') % matchedHere.length];
+          lsSet(LS_ENROLLED, exp.id);
+        }
+      }
+      if (!exp) return; // committed to a test on another page, or no match here
 
-        applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+      var variantType = assignVariant(rawVisitorId, exp.id);
+      var variant = null;
+      for (var j = 0; j < exp.variants.length; j++) {
+        if (exp.variants[j].type === variantType) { variant = exp.variants[j]; break; }
+      }
+      if (!variant) return;
 
-        fireViewEvent({
-          experimentId: exp.id,
-          variantId:    variant.id,
-          visitorId:    visitorId,
-          sessionId:    sessionId,
-          eventType:    'view',
-        });
+      lsSet(LS_VID_PFX + exp.id, variant.id);
+      applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+      fireViewEvent({
+        experimentId: exp.id,
+        variantId:    variant.id,
+        visitorId:    visitorId,
+        sessionId:    sessionId,
+        eventType:    'view',
       });
       });
   }).catch(function () {
