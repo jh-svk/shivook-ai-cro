@@ -54,7 +54,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return {
       experiments: [] as Awaited<
         ReturnType<
-          typeof prisma.experiment.findMany<{ include: { result: true } }>
+          typeof prisma.experiment.findMany<{ include: { result: true; segment: true } }>
         >
       >,
       orchestratorLogs: [] as Awaited<ReturnType<typeof prisma.orchestratorLog.findMany>>,
@@ -367,6 +367,21 @@ export default function ExperimentsIndex() {
                       </s-badge>
                     </s-table-cell>
                     <s-table-cell>{exp.pageType}</s-table-cell>
+                    <s-table-cell>
+                      {exp.segment?.deviceType ? titleCase(exp.segment.deviceType) : "All"}
+                    </s-table-cell>
+                    <s-table-cell>
+                      {exp.segment?.visitorType
+                        ? titleCase(exp.segment.visitorType) + " visitors"
+                        : exp.segment?.trafficSource
+                        ? titleCase(exp.segment.trafficSource) + " traffic"
+                        : "All"}
+                    </s-table-cell>
+                    <s-table-cell>
+                      {exp.segment?.geoCountry && exp.segment.geoCountry.length > 0
+                        ? exp.segment.geoCountry.join(", ")
+                        : "All"}
+                    </s-table-cell>
                     <s-table-cell>
                       {exp.result
                         ? (
