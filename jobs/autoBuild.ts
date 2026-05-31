@@ -27,7 +27,8 @@ export interface AutoBuildJobData {
 
 export async function enqueueAutoBuild(shopId: string, hypothesisId: string): Promise<void> {
   const boss = await getBoss();
-  await boss.send(AUTO_BUILD_QUEUE, { shopId, hypothesisId }, { retryLimit: 3, retryDelay: 15 });
+  const id = await boss.send(AUTO_BUILD_QUEUE, { shopId, hypothesisId }, { retryLimit: 3, retryDelay: 15, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[autoBuild] send returned null for hypothesis ${hypothesisId} — job blocked`);
 }
 
 async function logOrchestrator(

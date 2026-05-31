@@ -11,7 +11,8 @@ export interface ResultRefreshJobData {
 
 export async function enqueueResultRefresh(experimentId: string): Promise<void> {
   const boss = await getBoss();
-  await boss.send(RESULT_REFRESH_QUEUE, { experimentId }, { retryLimit: 3, retryDelay: 5 });
+  const id = await boss.send(RESULT_REFRESH_QUEUE, { experimentId }, { retryLimit: 3, retryDelay: 5, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[resultRefresh] send returned null for ${experimentId} — job blocked`);
 }
 
 const AOV_GUARDRAIL_THRESHOLD = 0.03;

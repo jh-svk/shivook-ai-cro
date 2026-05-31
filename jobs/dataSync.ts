@@ -13,7 +13,8 @@ export interface DataSyncJobData {
 
 export async function enqueueDataSync(shopId: string): Promise<void> {
   const boss = await getBoss();
-  await boss.send(DATA_SYNC_QUEUE, { shopId }, { retryLimit: 3, retryDelay: 10 });
+  const id = await boss.send(DATA_SYNC_QUEUE, { shopId }, { retryLimit: 3, retryDelay: 10, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[dataSync] send returned null for shop ${shopId} — job blocked by queue policy`);
 }
 
 export async function runDataSync(shopId: string) {
