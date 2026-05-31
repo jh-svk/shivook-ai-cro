@@ -92,8 +92,16 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { error: "End the test before deleting it." };
     }
     try {
+      // Remove every row that references this experiment before deleting it,
+      // otherwise foreign-key constraints block the delete (this is why
+      // concluded experiments — which have a knowledge-base entry — failed).
+      await prisma.hypothesis.updateMany({
+        where: { promotedExperimentId: params.id },
+        data: { promotedExperimentId: null },
+      });
       await prisma.event.deleteMany({ where: { experimentId: params.id } });
       await prisma.result.deleteMany({ where: { experimentId: params.id } });
+      await prisma.knowledgeBase.deleteMany({ where: { experimentId: params.id } });
       try {
         await prisma.orchestratorLog.deleteMany({
           where: { payload: { path: ["experimentId"], equals: params.id } },

@@ -69,8 +69,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (deletable.length === 0) return { error: "No deletable experiments selected (active/paused tests cannot be deleted)." };
 
   try {
+    // Clear all rows referencing these experiments before deleting (FK order).
+    await prisma.hypothesis.updateMany({
+      where: { promotedExperimentId: { in: deletable } },
+      data: { promotedExperimentId: null },
+    });
     await prisma.event.deleteMany({ where: { experimentId: { in: deletable } } });
     await prisma.result.deleteMany({ where: { experimentId: { in: deletable } } });
+    await prisma.knowledgeBase.deleteMany({ where: { experimentId: { in: deletable } } });
     try {
       for (const id of deletable) {
         await prisma.orchestratorLog.deleteMany({
