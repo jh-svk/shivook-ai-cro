@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, useActionData, useLoaderData, useNavigation, useRevalidator } from "react-router";
+import { useEffect, useRef, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -144,6 +145,57 @@ export default function HypothesesPage() {
   const promoted = hypotheses.filter((h) => h.status === "promoted");
   const rejected = hypotheses.filter((h) => h.status === "rejected");
 
+  // ── Live research progress (poll the loader so results appear without a manual refresh) ──
+  const revalidator = useRevalidator();
+  const isGenerating =
+    navigation.state !== "idle" && navigation.formData?.get("intent") === "generate";
+  const reportPending = latestReport?.status === "pending";
+
+  const [researching, setResearching] = useState(false);
+  const [, setTick] = useState(0); // 1s heartbeat to re-render the elapsed timer
+  const startRef = useRef<number | null>(null);
+  const baselineBacklogRef = useRef<number>(0);
+
+  // Start when a generate is submitted, or when a pending report is observed
+  useEffect(() => {
+    if ((isGenerating || reportPending) && !researching) {
+      setResearching(true);
+      startRef.current = Date.now();
+      baselineBacklogRef.current = backlog.length;
+    }
+  }, [isGenerating, reportPending, researching, backlog.length]);
+
+  // While researching: poll the loader every 4s + tick the timer every 1s
+  useEffect(() => {
+    if (!researching) return;
+    const poll = setInterval(() => {
+      const elapsed = startRef.current ? (Date.now() - startRef.current) / 1000 : 0;
+      if (revalidator.state === "idle" && elapsed < 360) revalidator.revalidate();
+    }, 4000);
+    const heartbeat = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => {
+      clearInterval(poll);
+      clearInterval(heartbeat);
+    };
+  }, [researching, revalidator]);
+
+  // Stop when new hypotheses arrive, the report fails, or we time out (~6 min)
+  useEffect(() => {
+    if (!researching) return;
+    const grew = backlog.length > baselineBacklogRef.current;
+    const failed = latestReport?.status === "failed";
+    const elapsed = startRef.current ? (Date.now() - startRef.current) / 1000 : 0;
+    if (grew || failed || elapsed > 360) {
+      setResearching(false);
+      startRef.current = null;
+    }
+  }, [researching, backlog.length, latestReport?.status]);
+
+  const elapsedSec =
+    researching && startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0;
+  const tooLong = elapsedSec > 300;
+  const mmss = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`;
+
   return (
     <s-page heading="Hypothesis Backlog">
       <s-button
@@ -155,14 +207,6 @@ export default function HypothesesPage() {
         All experiments
       </s-button>
 
-      {isSubmitting && (
-        <s-banner tone="info" heading="Pipeline started">
-          <s-paragraph>
-            Running data sync and research synthesis — new hypotheses will
-            appear in 1–3 minutes. You can leave this page.
-          </s-paragraph>
-        </s-banner>
-      )}
       {!isSubmitting && actionData && "message" in actionData && (
         <s-banner tone="success" heading="Pipeline queued" dismissible>
           <s-paragraph>{(actionData as { message: string }).message}</s-paragraph>
@@ -181,33 +225,60 @@ export default function HypothesesPage() {
             new A/B test hypotheses ranked by ICE score. Each cycle takes
             1–3 minutes.
           </s-paragraph>
-          {latestReport && (
-            <s-paragraph>
-              Last report:{" "}
-              {new Date(latestReport.generatedAt).toLocaleString()} —{" "}
-              <s-badge
-                tone={
-                  latestReport.status === "complete"
-                    ? "success"
-                    : latestReport.status === "failed"
-                    ? "critical"
-                    : "info"
-                }
-              >
-                {formatStatus(latestReport.status)}
-              </s-badge>
-            </s-paragraph>
+          {researching ? (
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="base">
+                <s-heading>
+                  {tooLong ? "Still working…" : "Researching your store…"}
+                </s-heading>
+                <s-paragraph>
+                  Analysing your store data and generating ranked hypotheses.
+                  They’ll appear below automatically — you don’t need to refresh
+                  the page.
+                </s-paragraph>
+                <progress
+                  value={Math.min(elapsedSec, 180)}
+                  max={180}
+                  style={{ width: "100%", height: "10px" }}
+                />
+                <s-text tone="neutral">
+                  {tooLong
+                    ? `Elapsed ${mmss} — this is taking longer than usual. It may still finish; if not, you can re-run.`
+                    : `Elapsed ${mmss} · usually takes 1–3 minutes`}
+                </s-text>
+              </s-stack>
+            </s-box>
+          ) : (
+            <>
+              {latestReport && (
+                <s-paragraph>
+                  Last report:{" "}
+                  {new Date(latestReport.generatedAt).toLocaleString()} —{" "}
+                  <s-badge
+                    tone={
+                      latestReport.status === "complete"
+                        ? "success"
+                        : latestReport.status === "failed"
+                        ? "critical"
+                        : "info"
+                    }
+                  >
+                    {formatStatus(latestReport.status)}
+                  </s-badge>
+                </s-paragraph>
+              )}
+              <Form method="post">
+                <input type="hidden" name="intent" value="generate" />
+                <s-button
+                  type="submit"
+                  variant="primary"
+                  {...(isSubmitting ? { loading: true } : {})}
+                >
+                  Generate new hypotheses
+                </s-button>
+              </Form>
+            </>
           )}
-          <Form method="post">
-            <input type="hidden" name="intent" value="generate" />
-            <s-button
-              type="submit"
-              variant="primary"
-              {...(isSubmitting ? { loading: true } : {})}
-            >
-              Generate new hypotheses
-            </s-button>
-          </Form>
         </s-stack>
       </s-section>
 
