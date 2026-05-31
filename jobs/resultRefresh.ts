@@ -1,9 +1,9 @@
 import { getBoss } from "../lib/pgboss.server";
 import { computeStats } from "../lib/stats";
-
-export const RESULT_REFRESH_QUEUE = "result-refresh";
 import { writeKnowledgeBaseEntry, writePlatformLearning } from "../lib/knowledgeBase.server";
 import prisma from "../app/db.server";
+
+export const RESULT_REFRESH_QUEUE = "result-refresh";
 
 export interface ResultRefreshJobData {
   experimentId: string;
