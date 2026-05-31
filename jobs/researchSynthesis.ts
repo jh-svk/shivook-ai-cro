@@ -21,6 +21,7 @@ export interface ResearchSynthesisJobData {
 
 export async function enqueueResearchSynthesis(shopId: string): Promise<void> {
   const boss = await getBoss();
+  await boss.createQueue(RESEARCH_SYNTHESIS_QUEUE);
   const id = await boss.send(RESEARCH_SYNTHESIS_QUEUE, { shopId }, { retryLimit: 3, retryDelay: 15, retryBackoff: true }); // retryDelay in seconds
   if (id === null) console.warn(`[researchSynthesis] send returned null for shop ${shopId} — job blocked`);
 }

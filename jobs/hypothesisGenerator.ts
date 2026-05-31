@@ -22,6 +22,7 @@ export interface HypothesisGeneratorJobData {
 
 export async function enqueueHypothesisGenerator(shopId: string, reportId: string): Promise<void> {
   const boss = await getBoss();
+  await boss.createQueue(HYPOTHESIS_GENERATOR_QUEUE);
   const id = await boss.send(HYPOTHESIS_GENERATOR_QUEUE, { shopId, reportId }, { retryLimit: 3, retryDelay: 15, retryBackoff: true }); // retryDelay in seconds
   if (id === null) console.warn(`[hypothesisGenerator] send returned null for shop ${shopId} — job blocked`);
 }

@@ -32,6 +32,19 @@ export async function ensureWorkersStarted() {
   try {
     const boss = await getBoss();
 
+    // pg-boss v12 requires queues to exist before workers can subscribe
+    await Promise.all([
+      boss.createQueue(DATA_SYNC_QUEUE),
+      boss.createQueue(RESEARCH_SYNTHESIS_QUEUE),
+      boss.createQueue(HYPOTHESIS_GENERATOR_QUEUE),
+      boss.createQueue(RESULT_REFRESH_QUEUE),
+      boss.createQueue(AUTO_BUILD_QUEUE),
+      // Scheduler cron queues
+      boss.createQueue("hourly-refresh"),
+      boss.createQueue("nightly-sync"),
+      boss.createQueue("orchestrator-tick"),
+    ]);
+
     // Phase 2 workers
     await boss.work<{ shopId: string }>(DATA_SYNC_QUEUE, async (jobs) => {
       for (const job of jobs) await runDataSync(job.data.shopId);
