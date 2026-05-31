@@ -137,6 +137,34 @@ function qaGate(htmlPatch: string | null, jsPatch: string | null): { passed: boo
   return { passed: true };
 }
 
+type VariantPatches = {
+  htmlPatch: string | null;
+  cssPatch: string | null;
+  jsPatch: string | null;
+  variantDescription: string;
+};
+
+/**
+ * Move inline <script> blocks out of htmlPatch into jsPatch. Claude frequently
+ * embeds variant JS as a synchronous <script> in the HTML, which (a) trips the
+ * QA gate and (b) wouldn't run anyway — scripts inserted via innerHTML don't
+ * execute. The theme extension runs jsPatch explicitly, so lifting them out
+ * both passes QA and makes the variant actually function.
+ */
+function extractInlineScripts(patches: VariantPatches): void {
+  if (!patches.htmlPatch || !/<script/i.test(patches.htmlPatch)) return;
+  const scripts: string[] = [];
+  patches.htmlPatch = patches.htmlPatch
+    .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, (_m, js: string) => {
+      if (js && js.trim()) scripts.push(js.trim());
+      return "";
+    })
+    .trim();
+  if (scripts.length) {
+    patches.jsPatch = [patches.jsPatch, ...scripts].filter(Boolean).join("\n");
+  }
+}
+
 interface CritiqueResult {
   passed: boolean;
   failedItems: string[];
@@ -283,7 +311,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    max_tokens: 8192,
     system: buildSystemPrompt(),
     messages: [
       {
@@ -319,6 +347,9 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     console.error(`[autoBuild] JSON parse failed for hypothesis ${hypothesisId} — marked qa_failed`);
     return; // complete cleanly, no retry
   }
+
+  // Recover the common case of Claude embedding JS as an inline <script>.
+  extractInlineScripts(patches);
 
   const qa = qaGate(patches.htmlPatch ?? null, patches.jsPatch ?? null);
   if (!qa.passed) {
@@ -362,7 +393,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
 
       const retryResponse = await client.messages.create({
         model: "claude-sonnet-4-6",
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: buildSystemPrompt(),
         messages: [{ role: "user", content: retryPrompt }],
       });
@@ -375,6 +406,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
           .replace(/\n?```$/, "");
         try {
           patches = JSON.parse(retryJsonStr);
+          extractInlineScripts(patches);
           critique = await designCritique(patches.htmlPatch ?? null, patches.cssPatch ?? null, patches.jsPatch ?? null, cssVars, client);
           if (!critique.passed) {
             await prisma.hypothesis.update({

@@ -143,6 +143,7 @@ export default function HypothesesPage() {
 
   const backlog = hypotheses.filter((h) => h.status === "backlog");
   const promoted = hypotheses.filter((h) => h.status === "promoted");
+  const failed = hypotheses.filter((h) => h.status === "qa_failed");
   const rejected = hypotheses.filter((h) => h.status === "rejected");
 
   // ── Live research progress (poll the loader so results appear without a manual refresh) ──
@@ -422,6 +423,58 @@ export default function HypothesesPage() {
                       View experiment
                     </s-link>
                   )}
+                </s-stack>
+              </s-box>
+            ))}
+          </s-stack>
+        </s-section>
+      )}
+
+      {failed.length > 0 && (
+        <s-section heading={`Generation failed (${failed.length})`}>
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              The AI couldn’t produce a variant that passed quality checks for
+              these. You can retry generation (the AI tries again from scratch)
+              or reject them.
+            </s-paragraph>
+            {failed.map((h) => (
+              <s-box
+                key={h.id}
+                padding="base"
+                borderWidth="base"
+                borderRadius="base"
+              >
+                <s-stack direction="block" gap="base">
+                  <s-stack direction="inline" gap="base">
+                    <s-badge tone="critical">Generation failed</s-badge>
+                    <s-text>{h.title}</s-text>
+                  </s-stack>
+                  <s-stack direction="inline" gap="base">
+                    <Form method="post" style={{ display: "inline" }}>
+                      <input type="hidden" name="intent" value="ai_generate" />
+                      <input type="hidden" name="hypothesisId" value={h.id} />
+                      <s-button
+                        type="submit"
+                        variant="primary"
+                        {...(isSubmitting ? { loading: true } : {})}
+                      >
+                        ✨ Retry AI Generate
+                      </s-button>
+                    </Form>
+                    <Form method="post" style={{ display: "inline" }}>
+                      <input type="hidden" name="intent" value="reject" />
+                      <input type="hidden" name="hypothesisId" value={h.id} />
+                      <s-button
+                        type="submit"
+                        variant="secondary"
+                        tone="critical"
+                        {...(isSubmitting ? { loading: true } : {})}
+                      >
+                        Reject
+                      </s-button>
+                    </Form>
+                  </s-stack>
                 </s-stack>
               </s-box>
             ))}
