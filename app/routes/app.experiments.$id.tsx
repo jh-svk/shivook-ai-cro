@@ -238,7 +238,7 @@ function CodePreview({ label, code }: { label: string; code: string }) {
 }
 
 export default function ExperimentDetail() {
-  const { experiment, qaLog, shopDomain } = useLoaderData<typeof loader>();
+  const { experiment, qaLog, shopDomain, previewPath } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -531,7 +531,7 @@ export default function ExperimentDetail() {
                       <s-button
                         type="button"
                         variant="secondary"
-                        href={`https://${shopDomain}/?cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
+                        href={`https://${shopDomain}${previewPath}${previewPath.includes("?") ? "&" : "?"}cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
                         target="_blank"
                       >
                         Preview on storefront ↗
