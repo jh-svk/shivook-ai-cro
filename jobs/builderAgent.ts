@@ -30,7 +30,7 @@ export async function enqueueBuilderAgent(feedbackId: string, shopId: string): P
 }
 
 const BUILDER_SYSTEM_PROMPT = `You are a senior TypeScript developer implementing changes on "Shivook AI CRO" — a Shopify A/B testing app.
-Stack: Shopify Remix + Polaris, Prisma/Postgres, BullMQ/Redis, Railway hosting.
+Stack: Shopify Remix + Polaris, Prisma/Postgres, pg-boss (job queue), Fly.io hosting.
 
 You are working in a fresh clone of the repository. All file paths are relative to the repo root.
 

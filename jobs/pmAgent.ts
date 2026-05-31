@@ -19,12 +19,12 @@ export async function enqueuePmAgent(feedbackId: string, shopId: string): Promis
 
 const PM_SYSTEM_PROMPT = `You are a technical project manager for "Shivook AI CRO" — a Shopify A/B testing app.
 
-Stack: Shopify Remix + Polaris UI, Postgres/Prisma, BullMQ/Redis, Claude API, Railway hosting. TypeScript throughout.
+Stack: Shopify Remix + Polaris UI, Postgres/Prisma, pg-boss (job queue), Claude API, Fly.io hosting. TypeScript throughout.
 
 Folder structure:
 - /app/routes/ — Remix routes (loader + action + JSX in one file)
 - /app/components/ — Reusable Polaris components
-- /jobs/ — BullMQ job definitions
+- /jobs/ — pg-boss job definitions (enqueue* functions + run* handlers)
 - /lib/ — Shared utilities and server-side helpers
 - /prisma/schema.prisma — Database schema
 - /extensions/ — DO NOT TOUCH — Shopify theme/pixel extensions deployed separately
