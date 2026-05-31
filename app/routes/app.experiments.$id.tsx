@@ -43,7 +43,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
     const shop = await prisma.shop.findUnique({
       where: { shopifyDomain: session.shop },
-      select: { id: true, shopifyDomain: true },
+      select: { id: true, shopifyDomain: true, themeTokens: true },
     });
     if (!shop) throw new Response("Shop not found", { status: 404 });
 
@@ -53,6 +53,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     });
     if (!experiment) throw new Response("Not Found", { status: 404 });
 
+    // Preview should open on a page where the test actually runs, not the homepage.
+    const sampleUrls = (shop.themeTokens as { sampleUrls?: { product?: string | null; collection?: string | null } } | null)?.sampleUrls;
+    const previewPath =
+      experiment.pageType === "product" ? sampleUrls?.product ?? "/"
+      : experiment.pageType === "collection" ? sampleUrls?.collection ?? "/"
+      : experiment.pageType === "cart" ? "/cart"
+      : "/";
+
     // Load QA log for pending_approval experiments
     const qaLog = experiment.status === "pending_approval"
       ? await prisma.orchestratorLog.findFirst({
@@ -61,7 +69,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         })
       : null;
 
-    return { experiment, qaLog, shopDomain: shop.shopifyDomain };
+    return { experiment, qaLog, shopDomain: shop.shopifyDomain, previewPath };
   } catch (error) {
     if (error instanceof Response) throw error;
     console.error("[experiments.$id] loader error", error);

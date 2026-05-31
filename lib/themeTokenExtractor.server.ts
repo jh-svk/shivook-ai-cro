@@ -32,6 +32,11 @@ export interface ThemeTokens {
     headings: string[];
     buttons: string[];
   };
+  /** Real storefront paths for previewing a variant on the right page type. */
+  sampleUrls?: {
+    product?: string | null;
+    collection?: string | null;
+  };
   capturedPages?: string[];
 }
 
@@ -160,6 +165,12 @@ export function extractRealSelectors(html: string): { headings: string[]; button
 /** First product URL path found on a page (for sampling product-page structure). */
 function findProductPath(html: string): string | null {
   const m = html.match(/href\s*=\s*"(\/products\/[A-Za-z0-9\-_%]+)(?:[?#"]|$)/i);
+  return m ? m[1] : null;
+}
+
+/** First collection URL path found on a page (for previewing collection-page tests). */
+function findCollectionPath(html: string): string | null {
+  const m = html.match(/href\s*=\s*"(\/collections\/[A-Za-z0-9\-_%]+)(?:[?#"]|$)/i);
   return m ? m[1] : null;
 }
 
@@ -306,11 +317,12 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
     const capturedPages = ["homepage"];
     const vocab = extractDomVocabulary(html);
     const realSelectors = extractRealSelectors(html);
+    const productPath = findProductPath(html);
+    const collectionPath = findCollectionPath(html);
 
     // Sample a product page too (different structure from the homepage) so
     // product-page experiments have real selectors to target.
     try {
-      const productPath = findProductPath(html);
       if (productPath) {
         const productHtml = await fetchStorefrontHtml(domain, productPath);
         const pVocab = extractDomVocabulary(productHtml);
@@ -339,6 +351,7 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
       componentHtml,
       domVocabulary: vocab,
       realSelectors,
+      sampleUrls: { product: productPath, collection: collectionPath },
       capturedPages,
     };
 

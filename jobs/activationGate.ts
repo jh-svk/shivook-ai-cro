@@ -43,7 +43,14 @@ export async function runActivationGate(shopId: string, experimentId: string, fo
     return;
   }
 
-  const requireApproval = forceApproval || process.env.REQUIRE_HUMAN_APPROVAL !== "false";
+  // Honour the merchant's Settings toggle (shop.requireHumanApproval). forceApproval
+  // is a safety override from qaReview for LOW-CONFIDENCE builds — those still pause
+  // for review even if the merchant turned approval off.
+  const shopRow = await prisma.shop.findUnique({
+    where: { id: shopId },
+    select: { requireHumanApproval: true },
+  });
+  const requireApproval = forceApproval || (shopRow?.requireHumanApproval ?? false);
 
   if (requireApproval) {
     await prisma.experiment.update({
