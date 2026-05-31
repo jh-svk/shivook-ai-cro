@@ -143,13 +143,14 @@ function segmentSignature(pageType: string, s: SegmentShape | null | undefined):
 }
 
 /** Clamp an AI-proposed segment to real allowed values. Returns null if not device-specific. */
-function normalizeSegment(s: SegmentShape | null | undefined, avail: AvailableSegments): SegmentShape | null {
-  if (!s) return null;
-  const deviceType = s.deviceType && DEVICE_TYPES.includes(s.deviceType) ? s.deviceType : null;
-  if (!deviceType) return null; // every hypothesis must be device-specific (item 6)
-  const visitorType = s.visitorType && VISITOR_TYPES.includes(s.visitorType) ? s.visitorType : null;
-  const trafficSource = s.trafficSource && avail.trafficSources.includes(s.trafficSource) ? s.trafficSource : null;
-  const geoCountry = (s.geoCountry ?? []).filter((c) => avail.geoCountries.includes(c));
+function normalizeSegment(s: SegmentShape | null | undefined, avail: AvailableSegments): SegmentShape {
+  // Every hypothesis must be device-specific (item 6). If the model omits the
+  // device, default to "mobile" (the majority of storefront traffic) rather
+  // than dropping the hypothesis — keeps output non-empty and still specific.
+  const deviceType = s?.deviceType && DEVICE_TYPES.includes(s.deviceType) ? s.deviceType : "mobile";
+  const visitorType = s?.visitorType && VISITOR_TYPES.includes(s.visitorType) ? s.visitorType : null;
+  const trafficSource = s?.trafficSource && avail.trafficSources.includes(s.trafficSource) ? s.trafficSource : null;
+  const geoCountry = (s?.geoCountry ?? []).filter((c) => avail.geoCountries.includes(c));
   return { deviceType, visitorType, trafficSource, geoCountry };
 }
 
