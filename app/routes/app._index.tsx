@@ -6,6 +6,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
 import { formatStatus } from "../../lib/formatText";
+import { enqueueAutoBuild } from "../../jobs/autoBuild";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -39,7 +40,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         select: { id: true, title: true },
       }),
     ]);
-    return { experiments, orchestratorLogs, buildingHypotheses };
+    // Builds that failed quality checks — surfaced here so they're visible from
+    // the Experiments page too, not only on the AI Hypotheses tab.
+    const failedBuilds = await prisma.hypothesis.findMany({
+      where: { shopId: shop.id, status: "qa_failed" },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, title: true },
+    });
+    return { experiments, orchestratorLogs, buildingHypotheses, failedBuilds };
   } catch (error) {
     console.error("[app._index] failed to load experiments", error);
     return {
@@ -50,6 +59,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       >,
       orchestratorLogs: [] as Awaited<ReturnType<typeof prisma.orchestratorLog.findMany>>,
       buildingHypotheses: [] as { id: string; title: string }[],
+      failedBuilds: [] as { id: string; title: string }[],
     };
   }
 };
@@ -67,6 +77,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { status: "backlog" },
     });
     return { reset: true };
+  }
+
+  if (intent === "retry_build") {
+    const hid = String(fd.get("hypothesisId"));
+    const updated = await prisma.hypothesis.updateMany({
+      where: { id: hid, shopId: shop.id, status: "qa_failed" },
+      data: { status: "building" },
+    });
+    if (updated.count > 0) await enqueueAutoBuild(shop.id, hid);
+    return { retried: true };
+  }
+
+  if (intent === "dismiss_build") {
+    const hid = String(fd.get("hypothesisId"));
+    await prisma.hypothesis.updateMany({
+      where: { id: hid, shopId: shop.id, status: "qa_failed" },
+      data: { status: "rejected" },
+    });
+    return { dismissed: true };
   }
 
   if (intent !== "bulk_delete") return { error: "Invalid action." };
@@ -127,7 +156,7 @@ function relativeTime(date: string): string {
 }
 
 export default function ExperimentsIndex() {
-  const { experiments, orchestratorLogs, buildingHypotheses } = useLoaderData<typeof loader>();
+  const { experiments, orchestratorLogs, buildingHypotheses, failedBuilds } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
@@ -207,6 +236,43 @@ export default function ExperimentsIndex() {
                       Cancel &amp; return to backlog
                     </s-button>
                   </Form>
+                </s-stack>
+              </s-box>
+            ))}
+          </s-stack>
+        </s-section>
+      )}
+
+      {failedBuilds.length > 0 && (
+        <s-section heading={`Build failed (${failedBuilds.length})`}>
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              These variants couldn’t pass quality checks. Retry (the AI tries
+              again from scratch) or dismiss them.
+            </s-paragraph>
+            {failedBuilds.map((h) => (
+              <s-box key={h.id} padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small">
+                  <s-stack direction="inline" gap="base">
+                    <s-badge tone="critical">Build failed</s-badge>
+                    <s-text>{h.title}</s-text>
+                  </s-stack>
+                  <s-stack direction="inline" gap="base">
+                    <Form method="post" style={{ display: "inline" }}>
+                      <input type="hidden" name="intent" value="retry_build" />
+                      <input type="hidden" name="hypothesisId" value={h.id} />
+                      <s-button type="submit" variant="primary">
+                        ✨ Retry
+                      </s-button>
+                    </Form>
+                    <Form method="post" style={{ display: "inline" }}>
+                      <input type="hidden" name="intent" value="dismiss_build" />
+                      <input type="hidden" name="hypothesisId" value={h.id} />
+                      <s-button type="submit" variant="secondary" tone="critical">
+                        Dismiss
+                      </s-button>
+                    </Form>
+                  </s-stack>
                 </s-stack>
               </s-box>
             ))}
