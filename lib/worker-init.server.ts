@@ -8,10 +8,14 @@ import { runHypothesisGenerator, HYPOTHESIS_GENERATOR_QUEUE } from "../jobs/hypo
 import { processResultRefresh, RESULT_REFRESH_QUEUE } from "../jobs/resultRefresh";
 import { runAutoBuild, AUTO_BUILD_QUEUE } from "../jobs/autoBuild";
 
-// Phase 3 jobs (disabled until Phase 3 is active)
-// import { runActivationGate, ACTIVATION_GATE_QUEUE } from "../jobs/activationGate";
-// import { runOrchestrator, ORCHESTRATOR_QUEUE } from "../jobs/orchestrator";
-// import { runQaReview, QA_REVIEW_QUEUE } from "../jobs/qaReview";
+// Phase 3 jobs — autonomous CRO pipeline (orchestrator -> autoBuild -> qaReview -> activationGate)
+import { runActivationGate, ACTIVATION_GATE_QUEUE } from "../jobs/activationGate";
+import { runOrchestrator, ORCHESTRATOR_QUEUE } from "../jobs/orchestrator";
+import { runQaReview, QA_REVIEW_QUEUE } from "../jobs/qaReview";
+// NOTE: pmAgent + builderAgent are intentionally NOT enabled. builderAgent is a fully
+// autonomous coding agent that clones the repo, writes code, and opens + AUTO-MERGES PRs
+// in response to merchant feedback text. That self-modifying pipeline must be turned on
+// deliberately (with safeguards), never as part of routine worker startup.
 // import { processPmAgent, PM_AGENT_QUEUE } from "../jobs/pmAgent";
 // import { processBuilderAgent, BUILDER_AGENT_QUEUE } from "../jobs/builderAgent";
 
@@ -39,6 +43,10 @@ export async function ensureWorkersStarted() {
       boss.createQueue(HYPOTHESIS_GENERATOR_QUEUE),
       boss.createQueue(RESULT_REFRESH_QUEUE),
       boss.createQueue(AUTO_BUILD_QUEUE),
+      // Phase 3 queues
+      boss.createQueue(ORCHESTRATOR_QUEUE),
+      boss.createQueue(QA_REVIEW_QUEUE),
+      boss.createQueue(ACTIVATION_GATE_QUEUE),
       // Scheduler cron queues
       boss.createQueue("hourly-refresh"),
       boss.createQueue("nightly-sync"),
@@ -66,10 +74,23 @@ export async function ensureWorkersStarted() {
       for (const job of jobs) await runAutoBuild(job.data.shopId, job.data.hypothesisId);
     });
 
+    // Phase 3 workers — autonomous CRO pipeline
+    await boss.work<{ shopId: string }>(ORCHESTRATOR_QUEUE, async (jobs) => {
+      for (const job of jobs) await runOrchestrator(job.data.shopId);
+    });
+
+    await boss.work<{ shopId: string; experimentId: string; hypothesisId: string }>(QA_REVIEW_QUEUE, async (jobs) => {
+      for (const job of jobs) await runQaReview(job.data.shopId, job.data.experimentId, job.data.hypothesisId);
+    });
+
+    await boss.work<{ shopId: string; experimentId: string; forceApproval?: boolean }>(ACTIVATION_GATE_QUEUE, async (jobs) => {
+      for (const job of jobs) await runActivationGate(job.data.shopId, job.data.experimentId, job.data.forceApproval ?? false);
+    });
+
     // Register scheduled cron jobs
     await registerSchedules();
 
-    console.log("[workers] pg-boss workers started (5 Phase 2 workers + scheduler)");
+    console.log("[workers] pg-boss workers started (8 workers + scheduler)");
   } catch (error) {
     console.error("[workers] failed to start workers", error);
     global.__croWorkersStarted = false;

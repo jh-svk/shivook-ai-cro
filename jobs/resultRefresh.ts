@@ -41,19 +41,19 @@ export async function processResultRefresh(experimentId: string) {
   const [viewCounts, conversionCounts, revenueRows] = await Promise.all([
     prisma.$queryRaw<CountRow[]>`
       SELECT "variantId" AS variantid, COUNT(DISTINCT "visitorId") AS cnt
-      FROM "Event"
+      FROM "events"
       WHERE "experimentId" = ${experimentId} AND "eventType" = 'view'
       GROUP BY "variantId"
     `,
     prisma.$queryRaw<CountRow[]>`
       SELECT "variantId" AS variantid, COUNT(DISTINCT "visitorId") AS cnt
-      FROM "Event"
+      FROM "events"
       WHERE "experimentId" = ${experimentId} AND "eventType" = ${conversionEventType}
       GROUP BY "variantId"
     `,
     prisma.$queryRaw<{ variantid: string; total: string | null }[]>`
       SELECT "variantId" AS variantid, SUM("revenue") AS total
-      FROM "Event"
+      FROM "events"
       WHERE "experimentId" = ${experimentId} AND "eventType" = 'purchase'
       GROUP BY "variantId"
     `,

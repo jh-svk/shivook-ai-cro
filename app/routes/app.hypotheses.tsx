@@ -7,6 +7,7 @@ import { findOrCreateShop } from "../../lib/shop.server";
 import { enqueueDataSync } from "../../jobs/dataSync";
 import { enqueueResearchSynthesis } from "../../jobs/researchSynthesis";
 import { hasPlanFeature } from "../../lib/planGate.server";
+import { enqueueAutoBuild } from "../../jobs/autoBuild";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -77,6 +78,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     return { promoted: true, experimentId: experiment.id };
+  }
+
+  if (intent === "ai_generate") {
+    const allowed = await hasPlanFeature(shop.id, "auto_build");
+    if (!allowed) {
+      return { error: "AI variant generation requires the Pro plan. Upgrade at /app/billing." };
+    }
+    const hypothesisId = String(fd.get("hypothesisId"));
+    const hypothesis = await prisma.hypothesis.findUnique({
+      where: { id: hypothesisId, shopId: shop.id },
+      select: { id: true },
+    });
+    if (!hypothesis) return { error: "Hypothesis not found." };
+
+    // Fire the autonomous build: Claude generates brand-native HTML/CSS/JS patches,
+    // runs the design critique, creates a draft experiment, then chains to
+    // qaReview -> activationGate (which parks it in pending_approval).
+    await enqueueAutoBuild(shop.id, hypothesisId);
+    return {
+      message:
+        "AI is generating a brand-native variant for this hypothesis. It will appear as a draft experiment (pending your approval) within a minute or two.",
+    };
   }
 
   if (intent === "reject") {
@@ -237,14 +260,25 @@ export default function HypothesesPage() {
                     </s-stack>
                     <s-stack direction="inline" gap="base">
                       <Form method="post" style={{ display: "inline" }}>
-                        <input type="hidden" name="intent" value="promote" />
+                        <input type="hidden" name="intent" value="ai_generate" />
                         <input type="hidden" name="hypothesisId" value={h.id} />
                         <s-button
                           type="submit"
                           variant="primary"
                           {...(isSubmitting ? { loading: true } : {})}
                         >
-                          Promote to experiment
+                          ✨ AI Generate variant
+                        </s-button>
+                      </Form>
+                      <Form method="post" style={{ display: "inline" }}>
+                        <input type="hidden" name="intent" value="promote" />
+                        <input type="hidden" name="hypothesisId" value={h.id} />
+                        <s-button
+                          type="submit"
+                          variant="secondary"
+                          {...(isSubmitting ? { loading: true } : {})}
+                        >
+                          Promote (hand-code)
                         </s-button>
                       </Form>
                       <Form method="post" style={{ display: "inline" }}>

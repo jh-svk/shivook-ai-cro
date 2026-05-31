@@ -15,6 +15,8 @@
  * jobs/autoBuild.ts so this faithfully reproduces the production pipeline.
  */
 import dotenv from "dotenv";
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -209,8 +211,95 @@ function hr(label: string) {
   console.log("\n" + "─".repeat(70) + `\n${label}\n` + "─".repeat(70));
 }
 
+const EMIT_HTML = process.argv.includes("--html");
+
+/**
+ * Render the SAME generated variant under two different brands' tokens to prove
+ * it is genuinely brand-native (driven by var(--token), not hardcoded).
+ */
+function buildPreviewHtml(
+  patches: { htmlPatch: string | null; cssPatch: string | null; jsPatch: string | null; variantDescription: string },
+  realTokens: Record<string, string>,
+  hypothesisTitle: string
+): string {
+  // A deliberately different brand: deep aubergine bg, gold accent, serif, pills.
+  const swapped: Record<string, string> = {
+    ...realTokens,
+    "--color-base-background-1": "26, 22, 37",
+    "--color-base-text": "245, 240, 230",
+    "--color-base-accent-1": "212, 175, 55",
+    "--color-base-accent-2": "212, 175, 55",
+    "--color-base-solid-button-labels": "26, 22, 37",
+    "--font-heading-family": "'Playfair Display', Georgia, serif",
+    "--font-body-family": "Georgia, serif",
+    "--buttons-radius": "999px",
+    "--inputs-radius": "999px",
+    "--media-radius": "16px",
+  };
+
+  // Force the variant to display statically (strip JS-driven hide states).
+  const staticHtml = (patches.htmlPatch ?? "")
+    .replace(/style="[^"]*display:\s*none[^"]*"/gi, "")
+    .replace(/\shidden(=("|')?[^"'>]*("|')?)?/gi, "")
+    .replace(/aria-hidden="true"/gi, 'aria-hidden="false"');
+
+  const accentOf = (t: Record<string, string>) =>
+    t["--color-base-accent-1"] || t["--color-base-accent-2"] || "0,0,0";
+
+  const panel = (title: string, t: Record<string, string>) => {
+    const decls = Object.entries(t).map(([k, v]) => `${k}:${v}`).join(";");
+    return `
+    <div class="col">
+      <div class="label"><span class="swatch" style="background:rgb(${accentOf(t)})"></span>${title}</div>
+      <div class="browser">
+        <div class="chrome"><span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span></div>
+        <div class="store" style="${decls};background:rgb(var(--color-base-background-1));color:rgb(var(--color-base-text))">
+          <div class="hero" style="font-family:var(--font-heading-family)">
+            <h2>Aurora Skincare</h2>
+            <p style="font-family:var(--font-body-family)">Clean, plant-based essentials for every day</p>
+          </div>
+          ${staticHtml}
+        </div>
+      </div>
+    </div>`;
+  };
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<style>
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#eef0f3;color:#1a1a1a}
+  .wrap{padding:32px}
+  h1.title{font-size:22px;margin:0 0 6px}
+  p.sub{margin:0 0 6px;color:#444;font-size:14px;max-width:1100px;line-height:1.5}
+  p.meta{margin:0 0 24px;color:#777;font-size:12.5px}
+  .cols{display:flex;gap:30px;align-items:flex-start}
+  .col{flex:0 0 760px}
+  .label{font-size:13px;font-weight:600;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+  .swatch{display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.2)}
+  .browser{border:1px solid #d4d8de;border-radius:10px;overflow:hidden;box-shadow:0 10px 34px rgba(0,0,0,.12);background:#fff}
+  .chrome{height:30px;background:#e8ebef;display:flex;align-items:center;gap:6px;padding:0 12px;border-bottom:1px solid #d4d8de}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .store{min-height:300px}
+  .hero{padding:48px 24px;text-align:center}
+  .hero h2{margin:0 0 8px;font-size:28px}
+  .hero p{margin:0;opacity:.72}
+  ${patches.cssPatch ?? ""}
+</style></head>
+<body>
+<div class="wrap">
+  <h1 class="title">Same AI-generated variant code — two different brands</h1>
+  <p class="sub">Below is the identical variant the AI generated for: <b>${hypothesisTitle}</b>. The only thing different between the two panels is the store's design tokens. Because every color, font, and corner radius uses <code>var(--token)</code> instead of a hardcoded value, the variant automatically re-skins to match each brand. <b>That</b> is the brand-native improvement.</p>
+  <p class="meta">Left = shivook-team's real extracted theme (117 tokens). Right = a deliberately different palette (gold / serif / pill buttons). Zero variant-code changes between them.</p>
+  <div class="cols">
+    ${panel("shivook-team — REAL extracted tokens", realTokens)}
+    ${panel("Different brand — swapped palette", swapped)}
+  </div>
+</div>
+</body></html>`;
+}
+
 async function main() {
-  const idx = Number(process.argv[2] ?? "0");
+  const numArg = process.argv.slice(2).find((a) => /^\d+$/.test(a));
+  const idx = Number(numArg ?? "0");
 
   hr("STEP 1 — Shops with extracted theme tokens");
   const shops = await prisma.shop.findMany({
@@ -351,6 +440,15 @@ async function main() {
     console.log("    harness. In prod this variant would ship UNREVIEWED regardless of real issues.");
   }
   console.log("(dry run — nothing written to the database)");
+
+  if (EMIT_HTML) {
+    const outPath = resolve(process.cwd(), "variant-preview.html");
+    writeFileSync(outPath, buildPreviewHtml(patches, tokens.cssVars ?? {}, h.title));
+    hr("HTML PREVIEW");
+    console.log(`Wrote ${outPath}`);
+    console.log("Open it in a browser, or screenshot with:");
+    console.log(`  node scripts/screenshot.mjs "${outPath}" variant-preview.png`);
+  }
 }
 
 main()
