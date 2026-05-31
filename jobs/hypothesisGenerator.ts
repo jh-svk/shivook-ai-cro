@@ -83,120 +83,20 @@ Write metric names in plain English in the hypothesis prose (e.g. "add-to-cart r
 
 When segment data shows a specific device type or geography underperforming, target that segment in the recommendedSegment field. Set a field to null if the hypothesis applies broadly regardless of that dimension.`;
 
-type SegmentShape = {
-  deviceType?: string | null;
-  geoCountry?: string[];
-  trafficSource?: string | null;
-  visitorType?: string | null;
-};
-
-interface AvailableSegments {
-  deviceTypes: string[];
-  visitorTypes: string[];
-  geoCountries: string[];
-  trafficSources: string[];
-}
-
-const DEVICE_TYPES = ["mobile", "desktop", "tablet"];
-const VISITOR_TYPES = ["new", "returning", "purchaser"];
-
-/**
- * Real segment dimensions we can HONESTLY target, derived from store data.
- * Device + visitor type are inherent to every responsive storefront (the
- * injector detects them client-side). Geo comes from real Shopify revenue.
- * Traffic source requires GA4 (currently a stub) — so it's only offered when
- * real data exists; we never invent a paid/organic segment without proof.
- */
-function buildAvailableSegments(dataSnapshot: unknown): AvailableSegments {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const snap = (dataSnapshot ?? {}) as Record<string, any>;
-  const geo: string[] = [];
-  const tc = snap?.shopifyFunnel?.topCountriesByRevenue;
-  if (Array.isArray(tc)) {
-    for (const c of tc) {
-      const code = typeof c === "string" ? c : (c?.country ?? c?.countryCode ?? c?.code);
-      if (code && typeof code === "string") geo.push(code);
-    }
-  }
-  const ga4Geo = snap?.ga4?.segmentBreakdown?.topCountries;
-  if (Array.isArray(ga4Geo)) for (const c of ga4Geo) if (c?.country) geo.push(c.country);
-
-  const trafficSources: string[] = [];
-  const ga4Traffic = snap?.ga4?.segmentBreakdown?.trafficSource;
-  if (ga4Traffic && typeof ga4Traffic === "object") trafficSources.push(...Object.keys(ga4Traffic));
-
-  return {
-    deviceTypes: ["mobile", "desktop"],
-    visitorTypes: ["new", "returning"],
-    geoCountries: [...new Set(geo)].slice(0, 8),
-    trafficSources: [...new Set(trafficSources)],
-  };
-}
-
-/** Canonical "page + segment" signature — used to prevent duplicate-segment tests. */
-function segmentSignature(pageType: string, s: SegmentShape | null | undefined): string {
-  const d = s?.deviceType || "any";
-  const t = s?.trafficSource || "any";
-  const v = s?.visitorType || "any";
-  const g = (s?.geoCountry ?? []).slice().sort().join(",") || "any";
-  return `${pageType}|${d}|${t}|${v}|${g}`;
-}
-
-/** Clamp an AI-proposed segment to real allowed values. Returns null if not device-specific. */
-function normalizeSegment(s: SegmentShape | null | undefined, avail: AvailableSegments): SegmentShape {
-  // Every hypothesis must be device-specific (item 6). If the model omits the
-  // device, default to "mobile" (the majority of storefront traffic) rather
-  // than dropping the hypothesis — keeps output non-empty and still specific.
-  const deviceType = s?.deviceType && DEVICE_TYPES.includes(s.deviceType) ? s.deviceType : "mobile";
-  const visitorType = s?.visitorType && VISITOR_TYPES.includes(s.visitorType) ? s.visitorType : null;
-  const trafficSource = s?.trafficSource && avail.trafficSources.includes(s.trafficSource) ? s.trafficSource : null;
-  const geoCountry = (s?.geoCountry ?? []).filter((c) => avail.geoCountries.includes(c));
-  return { deviceType, visitorType, trafficSource, geoCountry };
-}
-
-function comboLabel(pageType: string, s: SegmentShape | null | undefined): string {
-  const parts: string[] = [pageType];
-  if (s?.deviceType) parts.push(s.deviceType);
-  if (s?.visitorType) parts.push(s.visitorType + " visitors");
-  if (s?.trafficSource) parts.push(s.trafficSource + " traffic");
-  if (s?.geoCountry?.length) parts.push(s.geoCountry.join("/"));
-  return parts.join(" · ");
-}
-
-function buildHypothesisPrompt(
-  reportMd: string,
-  pastTests: string,
-  avail: AvailableSegments,
-  coveredCombos: string[],
-): string {
+function buildHypothesisPrompt(reportMd: string, pastTests: string): string {
   return `## Research Report
 ${reportMd}
 
 ## Past Tests (avoid repeating these exactly)
 ${pastTests || "None yet."}
 
-## Segment targeting — MANDATORY
-Every hypothesis MUST target exactly ONE specific segment. A broad or null segment is NOT allowed —
-each segment has different needs, so a test must be tailored to one. Use ONLY these real values:
-- deviceType (REQUIRED, pick exactly one): ${JSON.stringify(avail.deviceTypes)}
-- visitorType (optional, or null): ${JSON.stringify(avail.visitorTypes)}
-- geoCountry: ${avail.geoCountries.length ? JSON.stringify(avail.geoCountries) + " (use [] or pick from this list ONLY)" : "[] — no geo data for this store, leave empty"}
-- trafficSource: ${avail.trafficSources.length ? JSON.stringify(avail.trafficSources) : "null — NO traffic-source data exists for this store, you MUST set this to null. Never invent paid/organic."}
-
-Rules:
-- deviceType is REQUIRED on every hypothesis.
-- Generate AT MOST ONE hypothesis per (pageType + segment) combination — never two tests competing for the same audience+page.
-- Spread hypotheses across DIFFERENT segment+page combinations to maximise coverage.
-- These (pageType + segment) combinations ALREADY exist in the backlog — DO NOT generate any hypothesis for these:
-${coveredCombos.length ? coveredCombos.map((c) => "  - " + c).join("\n") : "  (none yet)"}
-
 ---
 
-Generate 8-12 specific, testable A/B test hypotheses based on this research — each for a DISTINCT (pageType + segment) combination.
+Generate 10-15 specific, testable A/B test hypotheses based on this research.
 
 Return a JSON array. Each object must have these exact keys:
 - title: string (short, 5-8 words)
-- hypothesis: string (full "We believe..." statement, written in plain English)
+- hypothesis: string (full "We believe..." statement)
 - pageType: one of ${JSON.stringify(PAGE_TYPES)}
 - elementType: one of ${JSON.stringify(ELEMENT_TYPES)}
 - targetMetric: one of ${JSON.stringify(TARGET_METRICS)}
@@ -204,16 +104,14 @@ Return a JSON array. Each object must have these exact keys:
 - iceConfidence: integer 1-10
 - iceEase: integer 1-10
 - reasoning: string (1-2 sentences explaining the ICE scores)
-- recommendedSegment: { deviceType: REQUIRED one of ${JSON.stringify(avail.deviceTypes)}, geoCountry: string[], trafficSource: null, visitorType: one of ${JSON.stringify(avail.visitorTypes)} or null } — NEVER null, always a specific segment
+- recommendedSegment: { deviceType: "mobile"|"desktop"|"tablet"|null, geoCountry: string[], trafficSource: "paid"|"organic"|null, visitorType: "new"|"returning"|null } or null if broadly applicable
 
 Return ONLY the JSON array, no other text.`;
 }
 
 async function generateHypotheses(
   shopId: string,
-  reportId: string,
-  avail: AvailableSegments,
-  coveredCombos: string[],
+  reportId: string
 ): Promise<RawHypothesis[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
@@ -233,7 +131,7 @@ async function generateHypotheses(
     .join("\n");
 
   const platformInsights = await fetchPlatformInsights();
-  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests, avail, coveredCombos) +
+  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests) +
     (platformInsights
       ? `\n\n${platformInsights}\n\nWhen scoring ICE, use these platform patterns to calibrate Confidence scores. High-performing patterns on the platform should get higher Confidence. Consistent losers should get lower Confidence even if they seem logical locally.`
       : "");
