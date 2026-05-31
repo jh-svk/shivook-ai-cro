@@ -25,6 +25,25 @@ const FETCH_TIMEOUT_MS = 10_000;
 
 // ─── Pure functions (exported for testing) ───────────────────────────────────
 
+/**
+ * Bare CSS unit with no numeric component. Shopify themes frequently template
+ * vars from theme settings (e.g. `--media-padding: {{ settings.padding }}px;`).
+ * When the setting is empty this renders to a lone unit like `px` — useless and
+ * actively harmful if a variant interpolates it. We drop these.
+ */
+const BARE_UNIT_RE = /^(?:px|rem|em|%|vh|vw|vmin|vmax|pt|pc|ch|ex|cm|mm|in|q|fr|deg|rad|s|ms)$/i;
+
+/** True if a CSS var value is usable (not empty, not a bare unit, not stray Liquid). */
+export function isUsableCssVarValue(value: string): boolean {
+  const v = value.trim();
+  if (!v) return false;
+  // Un-rendered Liquid template fragments leaked into the CSS
+  if (v.includes("{{") || v.includes("}}") || v.includes("{%")) return false;
+  // Lone unit with no number (empty theme-setting interpolation)
+  if (BARE_UNIT_RE.test(v)) return false;
+  return true;
+}
+
 /** Extract CSS custom properties from raw CSS text (no HTML) */
 export function extractCssVarsFromCss(css: string): Record<string, string> {
   const vars: Record<string, string> = {};
@@ -32,7 +51,8 @@ export function extractCssVarsFromCss(css: string): Record<string, string> {
   for (const block of rootMatches) {
     const varMatches = block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g);
     for (const v of varMatches) {
-      vars[v[1].trim()] = v[2].trim();
+      const value = v[2].trim();
+      if (isUsableCssVarValue(value)) vars[v[1].trim()] = value;
     }
   }
   return vars;

@@ -148,7 +148,8 @@ async function designCritique(
   cssPatch: string | null,
   jsPatch: string | null,
   cssVars: Record<string, string>,
-  client: Anthropic
+  client: Anthropic,
+  maxTokens = 1024,
 ): Promise<CritiqueResult> {
   if (!htmlPatch && !cssPatch) {
     return { passed: true, failedItems: [], specificFixes: [] };
@@ -157,7 +158,7 @@ async function designCritique(
   try {
     const response = await client.messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 512,
+      max_tokens: maxTokens,
       messages: [
         {
           role: "user",
@@ -191,7 +192,21 @@ JS: ${jsPatch ?? "null"}`,
       .trim()
       .replace(/^```(?:json)?\n?/, "")
       .replace(/\n?```$/, "");
-    return JSON.parse(jsonStr) as CritiqueResult;
+    try {
+      return JSON.parse(jsonStr) as CritiqueResult;
+    } catch (parseErr) {
+      // A truncated response (long failedItems/specificFixes list) is the usual
+      // cause of unparseable JSON. Retry once with more headroom before falling
+      // back — otherwise the MORE broken a variant is, the longer the critique,
+      // the more likely it truncates and silently passes unreviewed.
+      if (response.stop_reason === "max_tokens" && maxTokens < 1500) {
+        console.warn(
+          `[autoBuild] designCritique truncated at ${maxTokens} tokens — retrying at 1500`
+        );
+        return designCritique(htmlPatch, cssPatch, jsPatch, cssVars, client, 1500);
+      }
+      throw parseErr;
+    }
   } catch (err) {
     console.error("[autoBuild] designCritique error (failing open):", err);
     return { passed: true, failedItems: [], specificFixes: [] };

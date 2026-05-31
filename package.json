@@ -18,6 +18,7 @@
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
     "test:unit": "vitest run --passWithNoTests",
+    "test:variant": "npx -y tsx scripts/dryRunVariant.ts",
     "typecheck": "react-router typegen && tsc --noEmit",
     "test:e2e": "playwright test",
     "test:infra": "playwright test --project=infra",
