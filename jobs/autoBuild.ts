@@ -16,6 +16,8 @@ import { hasPlanFeature } from "../lib/planGate.server";
 interface ThemeTokensShape {
   cssVars?: Record<string, string>;
   componentHtml?: Record<string, string>;
+  domVocabulary?: { classes?: string[]; ids?: string[]; dataAttrs?: string[] };
+  realSelectors?: { headings?: string[]; buttons?: string[] };
 }
 
 export const AUTO_BUILD_QUEUE = "auto-build";
@@ -114,6 +116,29 @@ Full guardrails: ${JSON.stringify(guardrails, null, 2)}`
       : `Brand guardrails: ${JSON.stringify(guardrails)}`;
   }
 
+  const real = tokens?.realSelectors;
+  const vocab = tokens?.domVocabulary;
+  let domBlock = "";
+  if (real && ((real.headings?.length ?? 0) > 0 || (real.buttons?.length ?? 0) > 0)) {
+    domBlock = `
+
+## Real DOM selectors on THIS store — TARGETING IS NON-NEGOTIABLE
+To locate an existing element in your JS you MUST use a selector built from the
+REAL class names / ids / attributes below. NEVER invent a data-* attribute, id,
+or class to FIND an element — an invented selector matches nothing, so the
+variant silently does nothing and the test is wasted.
+
+Real heading selectors: ${JSON.stringify(real.headings ?? [])}
+Real button / CTA selectors: ${JSON.stringify(real.buttons ?? [])}
+${(vocab?.classes?.length ?? 0) > 0 ? `Other real class names you may build selectors from (subset): ${JSON.stringify(vocab!.classes!.slice(0, 120))}` : ""}
+
+Targeting rules:
+- Choose the existing element that best matches "${elementType}" on the "${pageType}" page from the real selectors above.
+- You MAY create new child elements and give them your OWN ids/classes, but you must FIND the host element via a real selector from this store.
+- Standard Shopify selectors (e.g. form[action*="/cart/add"], [name="add"]) are allowed.
+- If no suitable real selector exists, return null patches instead of guessing.`;
+  }
+
   return `Generate variant patches for this A/B test hypothesis:
 
 Title: ${title}
@@ -122,7 +147,7 @@ Page type: ${pageType}
 Element type: ${elementType}
 Target metric: ${targetMetric}
 
-${constraintsBlock}
+${constraintsBlock}${domBlock}
 
 Return JSON with: htmlPatch, cssPatch, jsPatch, variantDescription.`;
 }
@@ -163,6 +188,66 @@ function extractInlineScripts(patches: VariantPatches): void {
   if (scripts.length) {
     patches.jsPatch = [patches.jsPatch, ...scripts].filter(Boolean).join("\n");
   }
+}
+
+/** Selector strings the JS uses to FIND elements (querySelector/getElementById/closest/matches). */
+function selectorsUsedInJs(js: string): string[] {
+  const out: string[] = [];
+  for (const m of js.matchAll(/(?:querySelector|querySelectorAll|closest|matches)\s*\(\s*(['"`])([^'"`]+)\1/g)) {
+    out.push(m[2]);
+  }
+  for (const m of js.matchAll(/getElementById\s*\(\s*(['"`])([^'"`]+)\1/g)) {
+    out.push("#" + m[2]);
+  }
+  return out;
+}
+
+/** Classes / ids / data-attrs the variant CREATES itself (so we don't flag them as "not on store"). */
+function variantOwnTokens(html: string, js: string) {
+  const classes = new Set<string>();
+  const ids = new Set<string>();
+  const dataAttrs = new Set<string>();
+  for (const m of html.matchAll(/\sid\s*=\s*"([^"]+)"/gi)) ids.add(m[1].trim());
+  for (const m of html.matchAll(/\sclass\s*=\s*"([^"]+)"/gi)) for (const c of m[1].split(/\s+/)) if (c) classes.add(c);
+  for (const m of html.matchAll(/\s(data-[a-z0-9-]+)\s*=/gi)) dataAttrs.add(m[1].toLowerCase());
+  for (const m of js.matchAll(/\.id\s*=\s*(['"`])([^'"`]+)\1/g)) ids.add(m[2]);
+  for (const m of js.matchAll(/\.className\s*=\s*(['"`])([^'"`]+)\1/g)) for (const c of m[2].split(/\s+/)) if (c) classes.add(c);
+  for (const m of js.matchAll(/classList\.add\s*\(([^)]*)\)/g)) for (const lit of m[1].matchAll(/(['"`])([^'"`]+)\1/g)) classes.add(lit[2]);
+  for (const m of js.matchAll(/setAttribute\s*\(\s*(['"`])(data-[a-z0-9-]+)\1/gi)) dataAttrs.add(m[2].toLowerCase());
+  return { classes, ids, dataAttrs };
+}
+
+interface SelectorCheck {
+  ok: boolean;
+  invalid: { selector: string; unknown: string[] }[];
+}
+
+/**
+ * Verify every element-finding selector in the JS references classes/ids/data-
+ * attrs that ACTUALLY exist on the store (or that the variant itself creates).
+ * An invented selector matches nothing → the variant silently no-ops.
+ */
+export function validateVariantSelectors(
+  jsPatch: string | null,
+  htmlPatch: string | null,
+  vocab: { classes?: string[]; ids?: string[]; dataAttrs?: string[] } | undefined,
+): SelectorCheck {
+  if (!jsPatch || !vocab || !(vocab.classes?.length || vocab.ids?.length)) {
+    return { ok: true, invalid: [] };
+  }
+  const own = variantOwnTokens(htmlPatch ?? "", jsPatch);
+  const knownClasses = new Set([...(vocab.classes ?? []), ...own.classes]);
+  const knownIds = new Set([...(vocab.ids ?? []), ...own.ids]);
+  const knownData = new Set([...(vocab.dataAttrs ?? []), ...own.dataAttrs]);
+  const invalid: { selector: string; unknown: string[] }[] = [];
+  for (const sel of selectorsUsedInJs(jsPatch)) {
+    const unknown: string[] = [];
+    for (const m of sel.matchAll(/\.([A-Za-z0-9_-]+)/g)) if (!knownClasses.has(m[1])) unknown.push("." + m[1]);
+    for (const m of sel.matchAll(/#([A-Za-z0-9_-]+)/g)) if (!knownIds.has(m[1])) unknown.push("#" + m[1]);
+    for (const m of sel.matchAll(/\[\s*(data-[a-z0-9-]+)/gi)) if (!knownData.has(m[1].toLowerCase())) unknown.push("[" + m[1] + "]");
+    if (unknown.length) invalid.push({ selector: sel, unknown });
+  }
+  return { ok: invalid.length === 0, invalid };
 }
 
 interface CritiqueResult {
@@ -360,6 +445,52 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     await logOrchestrator(shopId, runId, "QA", "failed", { reason: qa.reason, hypothesisId });
     console.log(`[autoBuild] QA failed for hypothesis ${hypothesisId}: ${qa.reason}`);
     return;
+  }
+
+  // ── Selector grounding: variants must target elements that EXIST ───────────
+  const selTokens = hypothesis.shop.themeTokens as ThemeTokensShape | null;
+  const selVocab = selTokens?.domVocabulary;
+  let selCheck = validateVariantSelectors(patches.jsPatch ?? null, patches.htmlPatch ?? null, selVocab);
+  if (!selCheck.ok) {
+    const bad = selCheck.invalid.map((i) => `${i.selector} (unknown: ${i.unknown.join(" ")})`).join("; ");
+    console.log(`[autoBuild] invalid selectors for ${hypothesisId}: ${bad} — retrying with real selectors`);
+    const retryPrompt =
+      buildUserPrompt(
+        hypothesis.title,
+        hypothesis.hypothesis,
+        hypothesis.pageType,
+        hypothesis.elementType,
+        hypothesis.targetMetric,
+        hypothesis.shop.brandGuardrails,
+        hypothesis.shop.themeTokens,
+      ) +
+      `\n\n## Selector errors — MUST fix before responding:\n` +
+      `These selectors in your JS target elements that DO NOT EXIST on this store: ${bad}.\n` +
+      `Rebuild using ONLY real selectors. Real heading selectors: ${JSON.stringify(selTokens?.realSelectors?.headings ?? [])}. Real button selectors: ${JSON.stringify(selTokens?.realSelectors?.buttons ?? [])}.`;
+    const retryResp = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      system: buildSystemPrompt(),
+      messages: [{ role: "user", content: retryPrompt }],
+    });
+    const retryRaw = retryResp.content[0];
+    if (retryRaw.type === "text") {
+      const retryJson = retryRaw.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+      try {
+        patches = JSON.parse(retryJson);
+        extractInlineScripts(patches);
+        selCheck = validateVariantSelectors(patches.jsPatch ?? null, patches.htmlPatch ?? null, selVocab);
+      } catch {
+        /* keep original patches; selCheck stays failed */
+      }
+    }
+    if (!selCheck.ok) {
+      await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
+      await logOrchestrator(shopId, runId, "SELECTOR", "failed", { hypothesisId, invalid: selCheck.invalid });
+      console.log(`[autoBuild] selector validation failed after retry for ${hypothesisId} — marked qa_failed`);
+      return;
+    }
+    console.log(`[autoBuild] selectors valid after retry for ${hypothesisId}`);
   }
 
   // ── Design critique pass ──────────────────────────────────────────────────
