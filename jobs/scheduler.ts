@@ -1,118 +1,64 @@
-import { Queue, Worker } from "bullmq";
-import { connection, QUEUE_NAMES } from "../lib/queue";
-import { resultRefreshQueue } from "./resultRefresh";
-import { dataSyncQueue } from "./dataSync";
-import { researchSynthesisQueue } from "./researchSynthesis";
-import { hypothesisGeneratorQueue } from "./hypothesisGenerator";
-import { orchestratorQueue } from "./orchestrator";
+/**
+ * Scheduler — registers recurring pg-boss cron jobs.
+ * Replaces BullMQ's repeat-job mechanism.
+ */
+
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
+import { enqueueResultRefresh } from "./resultRefresh";
+import { enqueueDataSync } from "./dataSync";
+import { enqueueResearchSynthesis } from "./researchSynthesis";
+import { enqueueOrchestrator } from "./orchestrator";
 
-const SCHEDULER_QUEUE = "scheduler";
-const ONE_HOUR_MS = 60 * 60 * 1000;
-const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+// ── Cron handlers ─────────────────────────────────────────────────────────────
 
-export const schedulerQueue = new Queue(SCHEDULER_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 5000 },
-  },
-});
-
-async function runHourlyScheduler() {
+async function handleHourlyRefresh() {
   const activeExperiments = await prisma.experiment.findMany({
     where: { status: "active" },
     select: { id: true },
   });
-
-  console.log(
-    `[scheduler] enqueuing result refresh for ${activeExperiments.length} active experiments`
-  );
-
-  for (const { id: experimentId } of activeExperiments) {
-    await resultRefreshQueue.add(
-      `refresh-${experimentId}`,
-      { experimentId },
-      { jobId: `refresh-${experimentId}` }
-    );
+  console.log(`[scheduler] enqueuing result refresh for ${activeExperiments.length} active experiments`);
+  for (const exp of activeExperiments) {
+    await enqueueResultRefresh(exp.id);
   }
 }
 
-async function runNightlyScheduler() {
-  const shops = await prisma.shop.findMany({ select: { id: true } });
-
+async function handleNightlySync() {
+  const shops = await prisma.shop.findMany({ select: { id: true, shopifyDomain: true } });
   console.log(`[scheduler] nightly sync for ${shops.length} shops`);
-
-  // Spread shops across a 2-hour window to prevent thundering herd
-  for (const { id: shopId } of shops) {
-    const jitter = Math.round(Math.random() * 2 * ONE_HOUR_MS);
-    await dataSyncQueue.add(`sync-${shopId}`, { shopId }, { delay: jitter });
-    await researchSynthesisQueue.add(
-      `research-${shopId}`,
-      { shopId },
-      { delay: jitter + 10 * 60 * 1000 }
-    );
-  }
-
-  // Auto-expire pending_approval experiments older than AUTO_APPROVE_TIMEOUT_HOURS
-  const timeoutHours = parseInt(process.env.AUTO_APPROVE_TIMEOUT_HOURS ?? "24", 10);
-  const cutoff = new Date(Date.now() - timeoutHours * 60 * 60 * 1000);
-  const expired = await prisma.experiment.findMany({
-    where: { status: "pending_approval", updatedAt: { lt: cutoff } },
-    select: { id: true },
-  });
-  for (const exp of expired) {
-    await prisma.experiment.update({ where: { id: exp.id }, data: { status: "draft" } });
-    console.log(`[scheduler] auto-expired pending_approval experiment ${exp.id} after ${timeoutHours}h`);
+  for (const shop of shops) {
+    await enqueueDataSync(shop.id);
+    await enqueueResearchSynthesis(shop.id);
   }
 }
 
-async function runOrchestratorScheduler() {
+async function handleOrchestratorTick() {
   const shops = await prisma.shop.findMany({ select: { id: true } });
-  console.log(`[scheduler] orchestrator tick for ${shops.length} shops`);
-  for (const { id: shopId } of shops) {
-    await orchestratorQueue.add(`orch-${shopId}`, { shopId });
+  for (const shop of shops) {
+    await enqueueOrchestrator(shop.id);
   }
 }
 
-export function startSchedulerWorker() {
-  return new Worker(
-    SCHEDULER_QUEUE,
-    async (job) => {
-      if (job.name === "nightly") {
-        await runNightlyScheduler();
-      } else if (job.name === "orchestrator-tick") {
-        await runOrchestratorScheduler();
-      } else {
-        await runHourlyScheduler();
-      }
-    },
-    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
-  );
-}
+// ── Registration ──────────────────────────────────────────────────────────────
 
 export async function registerSchedules() {
-  const repeatables = await schedulerQueue.getRepeatableJobs();
-  const names = new Set(repeatables.map((j) => j.name));
+  const boss = await getBoss();
 
-  // Remove stale schedules to prevent duplicates on restart
-  for (const job of repeatables) {
-    if (
-      job.name === "hourly-result-refresh" ||
-      job.name === "hourly" ||
-      job.name === "nightly" ||
-      job.name === "orchestrator-tick"
-    ) {
-      await schedulerQueue.removeRepeatableByKey(job.key);
-    }
-  }
+  // Register cron schedules (pg-boss is idempotent — safe to call on every startup)
+  await boss.schedule("hourly-refresh", "0 * * * *", {});        // every hour
+  await boss.schedule("nightly-sync", "0 0 * * *", {});          // midnight UTC
+  await boss.schedule("orchestrator-tick", "0 */6 * * *", {});   // every 6 hours
 
-  await schedulerQueue.add("hourly", {}, { repeat: { every: ONE_HOUR_MS } });
-  await schedulerQueue.add("nightly", {}, { repeat: { every: ONE_DAY_MS } });
-  await schedulerQueue.add("orchestrator-tick", {}, { repeat: { every: 6 * ONE_HOUR_MS } });
+  // Register cron job handlers
+  await boss.work("hourly-refresh", async () => {
+    await handleHourlyRefresh();
+  });
+  await boss.work("nightly-sync", async () => {
+    await handleNightlySync();
+  });
+  await boss.work("orchestrator-tick", async () => {
+    await handleOrchestratorTick();
+  });
 
   console.log("[scheduler] hourly + nightly + orchestrator schedules registered");
 }
-
-/** @deprecated Use registerSchedules */
-export const registerHourlySchedule = registerSchedules;
