@@ -5,7 +5,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
-import { formatStatus } from "../../lib/formatText";
+import { formatStatus, titleCase } from "../../lib/formatText";
 import { enqueueAutoBuild } from "../../jobs/autoBuild";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
@@ -332,6 +332,9 @@ export default function ExperimentsIndex() {
               <s-table-header>Name</s-table-header>
               <s-table-header>Status</s-table-header>
               <s-table-header>Page type</s-table-header>
+              <s-table-header>Device</s-table-header>
+              <s-table-header>Audience</s-table-header>
+              <s-table-header>Geo</s-table-header>
               <s-table-header format="numeric">Visitors</s-table-header>
               <s-table-header format="numeric">Control conv.</s-table-header>
               <s-table-header format="numeric">Treatment conv.</s-table-header>

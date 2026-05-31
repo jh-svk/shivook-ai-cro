@@ -2,8 +2,8 @@
  * Hypothesis generator job.
  *
  * Reads the latest research report for a shop and calls Claude to produce
- * 10-20 scored A/B test hypotheses with ICE scores.
- * Writes results to the hypotheses table.
+ * scored A/B test hypotheses with ICE scores, each targeting ONE specific,
+ * honestly-available segment. Writes results to the hypotheses table.
  *
  * Requires ANTHROPIC_API_KEY in environment.
  */
@@ -30,6 +30,15 @@ export async function enqueueHypothesisGenerator(shopId: string, reportId: strin
 const PAGE_TYPES = ["product", "collection", "cart", "homepage", "any"] as const;
 const ELEMENT_TYPES = ["headline", "cta", "image", "layout", "trust", "price", "other"] as const;
 const TARGET_METRICS = ["conversion_rate", "add_to_cart_rate", "revenue_per_visitor"] as const;
+const DEVICE_TYPES = ["mobile", "desktop", "tablet"];
+const VISITOR_TYPES = ["new", "returning", "purchaser"];
+
+type SegmentShape = {
+  deviceType?: string | null;
+  geoCountry?: string[];
+  trafficSource?: string | null;
+  visitorType?: string | null;
+};
 
 type RawHypothesis = {
   title: string;
@@ -41,13 +50,79 @@ type RawHypothesis = {
   iceConfidence: number;
   iceEase: number;
   reasoning: string;
-  recommendedSegment?: {
-    deviceType?: string | null;
-    geoCountry?: string[];
-    trafficSource?: string | null;
-    visitorType?: string | null;
-  } | null;
+  recommendedSegment?: SegmentShape | null;
 };
+
+interface AvailableSegments {
+  deviceTypes: string[];
+  visitorTypes: string[];
+  geoCountries: string[];
+  trafficSources: string[];
+}
+
+/**
+ * Real segment dimensions we can HONESTLY target, derived from store data.
+ * Device + visitor type are inherent to every responsive storefront (the
+ * injector detects them client-side). Geo comes from real Shopify revenue or
+ * GA4. Traffic source requires GA4 — so it's only offered when real data
+ * exists; we never invent a paid/organic segment for a store without proof.
+ */
+function buildAvailableSegments(dataSnapshot: unknown): AvailableSegments {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const snap = (dataSnapshot ?? {}) as Record<string, any>;
+  const geo: string[] = [];
+  const tc = snap?.shopifyFunnel?.topCountriesByRevenue;
+  if (Array.isArray(tc)) {
+    for (const c of tc) {
+      const code = typeof c === "string" ? c : (c?.country ?? c?.countryCode ?? c?.code);
+      if (code && typeof code === "string") geo.push(code);
+    }
+  }
+  const ga4Geo = snap?.ga4?.segmentBreakdown?.topCountries;
+  if (Array.isArray(ga4Geo)) for (const c of ga4Geo) if (c?.country) geo.push(c.country);
+
+  const trafficSources: string[] = [];
+  const ga4Traffic = snap?.ga4?.segmentBreakdown?.trafficSource;
+  if (ga4Traffic && typeof ga4Traffic === "object") trafficSources.push(...Object.keys(ga4Traffic));
+
+  return {
+    deviceTypes: ["mobile", "desktop"],
+    visitorTypes: ["new", "returning"],
+    geoCountries: [...new Set(geo)].slice(0, 8),
+    trafficSources: [...new Set(trafficSources)],
+  };
+}
+
+/** Canonical "page + segment" signature — used to prevent duplicate-segment tests. */
+function segmentSignature(pageType: string, s: SegmentShape | null | undefined): string {
+  const d = s?.deviceType || "any";
+  const t = s?.trafficSource || "any";
+  const v = s?.visitorType || "any";
+  const g = (s?.geoCountry ?? []).slice().sort().join(",") || "any";
+  return `${pageType}|${d}|${t}|${v}|${g}`;
+}
+
+/**
+ * Clamp an AI-proposed segment to real allowed values. Every hypothesis must be
+ * device-specific (item 6) — if the model omits the device, default to "mobile"
+ * (the majority of storefront traffic) rather than dropping the hypothesis.
+ */
+function normalizeSegment(s: SegmentShape | null | undefined, avail: AvailableSegments): SegmentShape {
+  const deviceType = s?.deviceType && DEVICE_TYPES.includes(s.deviceType) ? s.deviceType : "mobile";
+  const visitorType = s?.visitorType && VISITOR_TYPES.includes(s.visitorType) ? s.visitorType : null;
+  const trafficSource = s?.trafficSource && avail.trafficSources.includes(s.trafficSource) ? s.trafficSource : null;
+  const geoCountry = (s?.geoCountry ?? []).filter((c) => avail.geoCountries.includes(c));
+  return { deviceType, visitorType, trafficSource, geoCountry };
+}
+
+function comboLabel(pageType: string, s: SegmentShape | null | undefined): string {
+  const parts: string[] = [pageType];
+  if (s?.deviceType) parts.push(s.deviceType);
+  if (s?.visitorType) parts.push(s.visitorType + " visitors");
+  if (s?.trafficSource) parts.push(s.trafficSource + " traffic");
+  if (s?.geoCountry?.length) parts.push(s.geoCountry.join("/"));
+  return parts.join(" · ");
+}
 
 const SYSTEM_PROMPT = `You are a senior CRO strategist. Generate specific, testable A/B test hypotheses.
 Each hypothesis must follow the format:
@@ -79,24 +154,42 @@ OTHER PLATFORM GUARDRAILS:
 - Keep JS patches under 10kb — suggest lightweight DOM changes, not full component rewrites
 
 Write metric names in plain English in the hypothesis prose (e.g. "add-to-cart rate", not
-"add_to_cart_rate").
+"add_to_cart_rate").`;
 
-When segment data shows a specific device type or geography underperforming, target that segment in the recommendedSegment field. Set a field to null if the hypothesis applies broadly regardless of that dimension.`;
-
-function buildHypothesisPrompt(reportMd: string, pastTests: string): string {
+function buildHypothesisPrompt(
+  reportMd: string,
+  pastTests: string,
+  avail: AvailableSegments,
+  coveredCombos: string[],
+): string {
   return `## Research Report
 ${reportMd}
 
 ## Past Tests (avoid repeating these exactly)
 ${pastTests || "None yet."}
 
+## Segment targeting — MANDATORY
+Every hypothesis MUST target exactly ONE specific segment. A broad or null segment is NOT allowed —
+each segment has different needs, so a test must be tailored to one. Use ONLY these real values:
+- deviceType (REQUIRED, pick exactly one): ${JSON.stringify(avail.deviceTypes)}
+- visitorType (optional, or null): ${JSON.stringify(avail.visitorTypes)}
+- geoCountry: ${avail.geoCountries.length ? JSON.stringify(avail.geoCountries) + " (use [] or pick from this list ONLY)" : "[] — no geo data for this store, leave empty"}
+- trafficSource: ${avail.trafficSources.length ? JSON.stringify(avail.trafficSources) : "null — NO traffic-source data exists for this store, you MUST set this to null. Never invent paid/organic."}
+
+Rules:
+- deviceType is REQUIRED on every hypothesis.
+- Generate AT MOST ONE hypothesis per (pageType + segment) combination — never two tests competing for the same audience+page.
+- Spread hypotheses across DIFFERENT segment+page combinations to maximise coverage.
+- These (pageType + segment) combinations ALREADY exist in the backlog — DO NOT generate any hypothesis for these:
+${coveredCombos.length ? coveredCombos.map((c) => "  - " + c).join("\n") : "  (none yet)"}
+
 ---
 
-Generate 10-15 specific, testable A/B test hypotheses based on this research.
+Generate 8-12 specific, testable A/B test hypotheses based on this research — each for a DISTINCT (pageType + segment) combination.
 
 Return a JSON array. Each object must have these exact keys:
 - title: string (short, 5-8 words)
-- hypothesis: string (full "We believe..." statement)
+- hypothesis: string (full "We believe..." statement, written in plain English)
 - pageType: one of ${JSON.stringify(PAGE_TYPES)}
 - elementType: one of ${JSON.stringify(ELEMENT_TYPES)}
 - targetMetric: one of ${JSON.stringify(TARGET_METRICS)}
@@ -104,14 +197,16 @@ Return a JSON array. Each object must have these exact keys:
 - iceConfidence: integer 1-10
 - iceEase: integer 1-10
 - reasoning: string (1-2 sentences explaining the ICE scores)
-- recommendedSegment: { deviceType: "mobile"|"desktop"|"tablet"|null, geoCountry: string[], trafficSource: "paid"|"organic"|null, visitorType: "new"|"returning"|null } or null if broadly applicable
+- recommendedSegment: { deviceType: REQUIRED one of ${JSON.stringify(avail.deviceTypes)}, geoCountry: string[], trafficSource: null, visitorType: one of ${JSON.stringify(avail.visitorTypes)} or null } — NEVER null, always a specific segment
 
 Return ONLY the JSON array, no other text.`;
 }
 
 async function generateHypotheses(
   shopId: string,
-  reportId: string
+  reportId: string,
+  avail: AvailableSegments,
+  coveredCombos: string[],
 ): Promise<RawHypothesis[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
@@ -131,7 +226,7 @@ async function generateHypotheses(
     .join("\n");
 
   const platformInsights = await fetchPlatformInsights();
-  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests) +
+  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests, avail, coveredCombos) +
     (platformInsights
       ? `\n\n${platformInsights}\n\nWhen scoring ICE, use these platform patterns to calibrate Confidence scores. High-performing patterns on the platform should get higher Confidence. Consistent losers should get lower Confidence even if they seem logical locally.`
       : "");
@@ -144,12 +239,7 @@ async function generateHypotheses(
     // whole run produced 0 hypotheses (report still showed "complete").
     max_tokens: 8192,
     system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: userPrompt,
-      },
-    ],
+    messages: [{ role: "user", content: userPrompt }],
   });
 
   const content = response.content[0];
@@ -218,27 +308,63 @@ function salvageJsonArray(raw: string): RawHypothesis[] {
 }
 
 export async function runHypothesisGenerator(shopId: string, reportId: string) {
-  const hypotheses = await generateHypotheses(shopId, reportId);
+  // Segments we can honestly target + (page+segment) combos already in the backlog.
+  const [shopRow, existing] = await Promise.all([
+    prisma.shop.findUnique({ where: { id: shopId }, select: { dataSnapshot: true } }),
+    prisma.hypothesis.findMany({
+      where: { shopId, status: { in: ["backlog", "building", "promoted"] } },
+      select: { pageType: true, recommendedSegment: true },
+    }),
+  ]);
+  const avail = buildAvailableSegments(shopRow?.dataSnapshot);
+  const covered = new Set(
+    existing.map((e) => segmentSignature(e.pageType, e.recommendedSegment as SegmentShape | null)),
+  );
+  const coveredCombos = existing.map((e) =>
+    comboLabel(e.pageType, e.recommendedSegment as SegmentShape | null),
+  );
 
-  const rows = hypotheses.map((h) => ({
-    shopId,
-    reportId,
-    title: h.title,
-    hypothesis: h.hypothesis,
-    pageType: PAGE_TYPES.includes(h.pageType as typeof PAGE_TYPES[number]) ? h.pageType : "any",
-    elementType: ELEMENT_TYPES.includes(h.elementType as typeof ELEMENT_TYPES[number]) ? h.elementType : "other",
-    targetMetric: TARGET_METRICS.includes(h.targetMetric as typeof TARGET_METRICS[number]) ? h.targetMetric : "conversion_rate",
-    iceImpact: Math.min(10, Math.max(1, Math.round(h.iceImpact))),
-    iceConfidence: Math.min(10, Math.max(1, Math.round(h.iceConfidence))),
-    iceEase: Math.min(10, Math.max(1, Math.round(h.iceEase))),
-    iceScore: Math.min(10, Math.max(1, Math.round(h.iceImpact))) *
-              Math.min(10, Math.max(1, Math.round(h.iceConfidence))) *
-              Math.min(10, Math.max(1, Math.round(h.iceEase))),
-    status: "backlog" as const,
-    recommendedSegment: h.recommendedSegment ?? undefined,
-  }));
+  const hypotheses = await generateHypotheses(shopId, reportId, avail, coveredCombos);
 
-  await prisma.hypothesis.createMany({ data: rows });
-  console.log(`[hypothesisGenerator] wrote ${rows.length} hypotheses for shop ${shopId}`);
+  const seen = new Set<string>();
+  let droppedDuplicate = 0;
+
+  const rows = hypotheses
+    .map((h) => {
+      const seg = normalizeSegment(h.recommendedSegment, avail);
+      const pageType = PAGE_TYPES.includes(h.pageType as typeof PAGE_TYPES[number]) ? h.pageType : "any";
+      const impact = Math.min(10, Math.max(1, Math.round(h.iceImpact)));
+      const confidence = Math.min(10, Math.max(1, Math.round(h.iceConfidence)));
+      const ease = Math.min(10, Math.max(1, Math.round(h.iceEase)));
+      return {
+        sig: segmentSignature(pageType, seg),
+        row: {
+          shopId,
+          reportId,
+          title: h.title,
+          hypothesis: h.hypothesis,
+          pageType,
+          elementType: ELEMENT_TYPES.includes(h.elementType as typeof ELEMENT_TYPES[number]) ? h.elementType : "other",
+          targetMetric: TARGET_METRICS.includes(h.targetMetric as typeof TARGET_METRICS[number]) ? h.targetMetric : "conversion_rate",
+          iceImpact: impact,
+          iceConfidence: confidence,
+          iceEase: ease,
+          iceScore: impact * confidence * ease,
+          status: "backlog" as const,
+          recommendedSegment: seg as object,
+        },
+      };
+    })
+    .filter((x) => {
+      // No duplicate (page + segment) combos — neither against the backlog nor within this batch (item 4).
+      if (covered.has(x.sig) || seen.has(x.sig)) { droppedDuplicate++; return false; }
+      seen.add(x.sig);
+      return true;
+    })
+    .map((x) => x.row);
+
+  if (rows.length) await prisma.hypothesis.createMany({ data: rows });
+  console.log(
+    `[hypothesisGenerator] wrote ${rows.length} hypotheses for shop ${shopId} (dropped ${droppedDuplicate} duplicate-segment)`,
+  );
 }
-
