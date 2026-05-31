@@ -182,7 +182,7 @@ export function startResearchSynthesisWorker() {
     async (job: Job<ResearchSynthesisJobData>) => {
       await runResearchSynthesis(job.data.shopId);
     },
-    { connection }
+    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
   );
   worker.on("failed", (job, err) => {
     console.error(`[researchSynthesis] job ${job?.id} failed:`, err?.message ?? err);

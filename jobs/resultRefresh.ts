@@ -228,6 +228,6 @@ export function startResultRefreshWorker() {
       console.log(`[resultRefresh] computing results for ${experimentId}`);
       await processResultRefresh(experimentId);
     },
-    { connection }
+    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
   );
 }

@@ -98,6 +98,6 @@ export function startDataSyncWorker() {
     async (job: Job<DataSyncJobData>) => {
       await runDataSync(job.data.shopId);
     },
-    { connection }
+    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
   );
 }

@@ -87,7 +87,7 @@ export function startSchedulerWorker() {
         await runHourlyScheduler();
       }
     },
-    { connection }
+    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
   );
 }
 

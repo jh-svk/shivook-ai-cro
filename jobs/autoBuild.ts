@@ -451,6 +451,6 @@ export function startAutoBuildWorker() {
     async (job: Job<AutoBuildJobData>) => {
       await runAutoBuild(job.data.shopId, job.data.hypothesisId);
     },
-    { connection }
+    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
   );
 }
