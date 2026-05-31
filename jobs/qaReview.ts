@@ -7,11 +7,10 @@
  * Requires ANTHROPIC_API_KEY in environment.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
-import { activationGateQueue } from "./activationGate";
+import { enqueueActivationGate } from "./activationGate";
 
 export const QA_REVIEW_QUEUE = "qa-review";
 
@@ -21,13 +20,11 @@ export interface QaReviewJobData {
   hypothesisId: string;
 }
 
-export const qaReviewQueue = new Queue<QaReviewJobData>(QA_REVIEW_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 15_000 },
-  },
-});
+export async function enqueueQaReview(shopId: string, experimentId: string, hypothesisId: string): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(QA_REVIEW_QUEUE, { shopId, experimentId, hypothesisId }, { retryLimit: 2, retryDelay: 30, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[qaReview] send returned null for experiment ${experimentId} — job blocked`);
+}
 
 interface QAResult {
   decision: "approve" | "reject";
@@ -123,7 +120,7 @@ async function logOrchestrator(
   });
 }
 
-async function runQaReview(shopId: string, experimentId: string, hypothesisId: string) {
+export async function runQaReview(shopId: string, experimentId: string, hypothesisId: string) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
@@ -215,21 +212,8 @@ async function runQaReview(shopId: string, experimentId: string, hypothesisId: s
     console.log(`[qaReview] low-confidence approval (${result.confidence}) for experiment ${experimentId}`);
   }
 
-  await activationGateQueue.add(`activate-${experimentId}`, {
-    shopId,
-    experimentId,
-    forceApproval,
-  });
+  await enqueueActivationGate(shopId, experimentId, forceApproval);
 
   console.log(`[qaReview] approved experiment ${experimentId} — chained to activationGate${forceApproval ? " (forceApproval)" : ""}`);
 }
 
-export function startQaReviewWorker() {
-  return new Worker<QaReviewJobData>(
-    QA_REVIEW_QUEUE,
-    async (job: Job<QaReviewJobData>) => {
-      await runQaReview(job.data.shopId, job.data.experimentId, job.data.hypothesisId);
-    },
-    { connection }
-  );
-}

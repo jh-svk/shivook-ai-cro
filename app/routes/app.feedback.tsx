@@ -4,7 +4,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
-import { pmAgentQueue } from "../../jobs/pmAgent";
+import { enqueuePmAgent } from "../../jobs/pmAgent";
 import { useEffect, useState } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -36,7 +36,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { shopId: shop.id, requestText },
     });
 
-    await pmAgentQueue.add(`pm-${record.id}`, { feedbackId: record.id, shopId: shop.id });
+    await enqueuePmAgent(record.id, shop.id);
 
     return { success: true };
   }

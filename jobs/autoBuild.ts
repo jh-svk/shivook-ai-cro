@@ -7,11 +7,10 @@
  * Requires ANTHROPIC_API_KEY in environment.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
+import { enqueueQaReview } from "./qaReview";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
-import { qaReviewQueue } from "./qaReview";
 import { hasPlanFeature } from "../lib/planGate.server";
 
 interface ThemeTokensShape {
@@ -26,13 +25,11 @@ export interface AutoBuildJobData {
   hypothesisId: string;
 }
 
-export const autoBuildQueue = new Queue<AutoBuildJobData>(AUTO_BUILD_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 15_000 },
-  },
-});
+export async function enqueueAutoBuild(shopId: string, hypothesisId: string): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(AUTO_BUILD_QUEUE, { shopId, hypothesisId }, { retryLimit: 3, retryDelay: 15, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[autoBuild] send returned null for hypothesis ${hypothesisId} — job blocked`);
+}
 
 async function logOrchestrator(
   shopId: string,
@@ -200,7 +197,7 @@ JS: ${jsPatch ?? "null"}`,
   }
 }
 
-async function runAutoBuild(shopId: string, hypothesisId: string) {
+export async function runAutoBuild(shopId: string, hypothesisId: string) {
   const runId = hypothesisId;
 
   const allowed = await hasPlanFeature(shopId, "auto_build");
@@ -438,19 +435,6 @@ async function runAutoBuild(shopId: string, hypothesisId: string) {
 
   console.log(`[autoBuild] created experiment ${experiment.id} from hypothesis ${hypothesisId}`);
 
-  await qaReviewQueue.add(`qa-${experiment.id}`, {
-    shopId,
-    experimentId: experiment.id,
-    hypothesisId,
-  });
+  await enqueueQaReview(shopId, experiment.id, hypothesisId);
 }
 
-export function startAutoBuildWorker() {
-  return new Worker<AutoBuildJobData>(
-    AUTO_BUILD_QUEUE,
-    async (job: Job<AutoBuildJobData>) => {
-      await runAutoBuild(job.data.shopId, job.data.hypothesisId);
-    },
-    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
-  );
-}

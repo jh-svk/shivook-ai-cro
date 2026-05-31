@@ -8,13 +8,12 @@
  * does not abort the run — subsequent stages always execute.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
+import { getBoss } from "../lib/pgboss.server";
 import { randomUUID } from "crypto";
-import { connection } from "../lib/queue";
 import prisma from "../app/db.server";
-import { dataSyncQueue } from "./dataSync";
-import { researchSynthesisQueue } from "./researchSynthesis";
-import { autoBuildQueue } from "./autoBuild";
+import { enqueueDataSync } from "./dataSync";
+import { enqueueResearchSynthesis } from "./researchSynthesis";
+import { enqueueAutoBuild } from "./autoBuild";
 import { writeKnowledgeBaseEntry } from "../lib/knowledgeBase.server";
 import { hasPlanFeature } from "../lib/planGate.server";
 
@@ -24,13 +23,11 @@ export interface OrchestratorJobData {
   shopId: string;
 }
 
-export const orchestratorQueue = new Queue<OrchestratorJobData>(ORCHESTRATOR_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 30_000 },
-  },
-});
+export async function enqueueOrchestrator(shopId: string): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(ORCHESTRATOR_QUEUE, { shopId }, { retryLimit: 1, retryDelay: 60, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[orchestrator] send returned null for shop ${shopId} — job blocked`);
+}
 
 async function log(
   shopId: string,
@@ -60,12 +57,8 @@ async function stageResearch(shopId: string, runId: string) {
     return;
   }
 
-  await dataSyncQueue.add(`orch-sync-${shopId}-${runId}`, { shopId });
-  await researchSynthesisQueue.add(
-    `orch-research-${shopId}-${runId}`,
-    { shopId },
-    { delay: 10 * 60 * 1000 }
-  );
+  await enqueueDataSync(shopId);
+  await enqueueResearchSynthesis(shopId);
   await log(shopId, runId, "RESEARCH", "complete", { message: "enqueued dataSync + researchSynthesis" });
 }
 
@@ -96,7 +89,7 @@ async function stageBuild(shopId: string, runId: string) {
     return;
   }
 
-  await autoBuildQueue.add(`build-${hypothesis.id}`, { shopId, hypothesisId: hypothesis.id });
+  await enqueueAutoBuild(shopId, hypothesis.id);
   await log(shopId, runId, "BUILD", "complete", {
     hypothesisId: hypothesis.id,
     title: hypothesis.title,
@@ -190,7 +183,7 @@ async function stageShip(shopId: string, runId: string) {
   await log(shopId, runId, "SHIP", "complete", { written });
 }
 
-async function runOrchestrator(shopId: string) {
+export async function runOrchestrator(shopId: string) {
   const runId = randomUUID();
   console.log(`[orchestrator] starting run ${runId} for shop ${shopId}`);
 
@@ -226,12 +219,3 @@ async function runOrchestrator(shopId: string) {
   console.log(`[orchestrator] completed run ${runId} for shop ${shopId}`);
 }
 
-export function startOrchestratorWorker() {
-  return new Worker<OrchestratorJobData>(
-    ORCHESTRATOR_QUEUE,
-    async (job: Job<OrchestratorJobData>) => {
-      await runOrchestrator(job.data.shopId);
-    },
-    { connection }
-  );
-}

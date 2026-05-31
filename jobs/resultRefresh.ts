@@ -1,27 +1,23 @@
-import { Queue, Worker, type Job } from "bullmq";
-import { connection, QUEUE_NAMES } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import { computeStats } from "../lib/stats";
 import { writeKnowledgeBaseEntry, writePlatformLearning } from "../lib/knowledgeBase.server";
 import prisma from "../app/db.server";
+
+export const RESULT_REFRESH_QUEUE = "result-refresh";
 
 export interface ResultRefreshJobData {
   experimentId: string;
 }
 
-export const resultRefreshQueue = new Queue<ResultRefreshJobData>(
-  QUEUE_NAMES.RESULT_REFRESH,
-  {
-    connection,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: { type: "exponential", delay: 5000 },
-    },
-  }
-);
+export async function enqueueResultRefresh(experimentId: string): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(RESULT_REFRESH_QUEUE, { experimentId }, { retryLimit: 3, retryDelay: 5, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[resultRefresh] send returned null for ${experimentId} — job blocked`);
+}
 
 const AOV_GUARDRAIL_THRESHOLD = 0.03;
 
-async function processResultRefresh(experimentId: string) {
+export async function processResultRefresh(experimentId: string) {
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
     include: { variants: true, segment: { select: { deviceType: true } } },
@@ -220,14 +216,3 @@ async function processResultRefresh(experimentId: string) {
   }
 }
 
-export function startResultRefreshWorker() {
-  return new Worker<ResultRefreshJobData>(
-    QUEUE_NAMES.RESULT_REFRESH,
-    async (job: Job<ResultRefreshJobData>) => {
-      const { experimentId } = job.data;
-      console.log(`[resultRefresh] computing results for ${experimentId}`);
-      await processResultRefresh(experimentId);
-    },
-    { connection, stalledInterval: 600_000, lockDuration: 600_000, drainDelay: 300 }
-  );
-}

@@ -1,5 +1,4 @@
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
@@ -12,22 +11,20 @@ export interface PmAgentJobData {
   shopId: string;
 }
 
-export const pmAgentQueue = new Queue<PmAgentJobData>(PM_AGENT_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 2,
-    backoff: { type: "exponential", delay: 10_000 },
-  },
-});
+export async function enqueuePmAgent(feedbackId: string, shopId: string): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(PM_AGENT_QUEUE, { feedbackId, shopId }, { retryLimit: 2, retryDelay: 30, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[pmAgent] send returned null for feedback ${feedbackId} — job blocked`);
+}
 
 const PM_SYSTEM_PROMPT = `You are a technical project manager for "Shivook AI CRO" — a Shopify A/B testing app.
 
-Stack: Shopify Remix + Polaris UI, Postgres/Prisma, BullMQ/Redis, Claude API, Railway hosting. TypeScript throughout.
+Stack: Shopify Remix + Polaris UI, Postgres/Prisma, pg-boss (job queue), Claude API, Fly.io hosting. TypeScript throughout.
 
 Folder structure:
 - /app/routes/ — Remix routes (loader + action + JSX in one file)
 - /app/components/ — Reusable Polaris components
-- /jobs/ — BullMQ job definitions
+- /jobs/ — pg-boss job definitions (enqueue* functions + run* handlers)
 - /lib/ — Shared utilities and server-side helpers
 - /prisma/schema.prisma — Database schema
 - /extensions/ — DO NOT TOUCH — Shopify theme/pixel extensions deployed separately
@@ -86,8 +83,7 @@ async function appendToAgentMessages(content: string): Promise<void> {
   }
 }
 
-async function processPmAgent(job: Job<PmAgentJobData>): Promise<void> {
-  const { feedbackId, shopId } = job.data;
+export async function processPmAgent(feedbackId: string, shopId: string): Promise<void> {
 
   try {
   const feedbackRequest = await prisma.feedbackRequest.findFirst({
@@ -163,8 +159,8 @@ ${pmDirective}
   await appendToAgentMessages(messageBlock);
 
   // Enqueue builder agent
-  const { builderAgentQueue } = await import("./builderAgent");
-  await builderAgentQueue.add(`build-${feedbackId}`, { feedbackId, shopId });
+  const { enqueueBuilderAgent } = await import("./builderAgent");
+  await enqueueBuilderAgent(feedbackId, shopId);
 
   } catch (err: unknown) {
     const errorMessage = (err as Error).message ?? String(err);
@@ -176,9 +172,3 @@ ${pmDirective}
   }
 }
 
-export function startPmAgentWorker() {
-  return new Worker<PmAgentJobData>(PM_AGENT_QUEUE, processPmAgent, {
-    connection,
-    concurrency: 2,
-  });
-}

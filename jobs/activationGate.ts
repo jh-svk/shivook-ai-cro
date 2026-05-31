@@ -5,8 +5,7 @@
  * pending_approval (REQUIRE_HUMAN_APPROVAL=true) or activates it directly.
  */
 
-import { Queue, Worker, type Job } from "bullmq";
-import { connection } from "../lib/queue";
+import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import { canActivateExperiment } from "../lib/concurrentTestManager.server";
 
@@ -18,13 +17,11 @@ export interface ActivationGateJobData {
   forceApproval?: boolean;
 }
 
-export const activationGateQueue = new Queue<ActivationGateJobData>(ACTIVATION_GATE_QUEUE, {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 10_000 },
-  },
-});
+export async function enqueueActivationGate(shopId: string, experimentId: string, forceApproval = false): Promise<void> {
+  const boss = await getBoss();
+  const id = await boss.send(ACTIVATION_GATE_QUEUE, { shopId, experimentId, forceApproval }, { retryLimit: 3, retryDelay: 15, retryBackoff: true }); // retryDelay in seconds
+  if (id === null) console.warn(`[activationGate] send returned null for experiment ${experimentId} — job blocked`);
+}
 
 async function logOrchestrator(
   shopId: string,
@@ -38,7 +35,7 @@ async function logOrchestrator(
   });
 }
 
-async function runActivationGate(shopId: string, experimentId: string, forceApproval = false) {
+export async function runActivationGate(shopId: string, experimentId: string, forceApproval = false) {
   const check = await canActivateExperiment(experimentId);
   if (!check.allowed) {
     await logOrchestrator(shopId, experimentId, "ACTIVATE", "skipped", { reason: check.reason });
@@ -68,12 +65,3 @@ async function runActivationGate(shopId: string, experimentId: string, forceAppr
   }
 }
 
-export function startActivationGateWorker() {
-  return new Worker<ActivationGateJobData>(
-    ACTIVATION_GATE_QUEUE,
-    async (job: Job<ActivationGateJobData>) => {
-      await runActivationGate(job.data.shopId, job.data.experimentId, job.data.forceApproval);
-    },
-    { connection }
-  );
-}
