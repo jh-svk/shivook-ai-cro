@@ -26,7 +26,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       prisma.experiment.findMany({
         where: { shopId: shop.id },
         orderBy: { createdAt: "desc" },
-        include: { result: true },
+        include: { result: true, segment: true },
       }),
       prisma.orchestratorLog.findMany({
         where: { shopId: shop.id },
