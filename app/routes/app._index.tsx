@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { findOrCreateShop } from "../../lib/shop.server";
+import { formatStatus } from "../../lib/formatText";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -235,7 +236,7 @@ export default function ExperimentsIndex() {
                     </s-table-cell>
                     <s-table-cell>
                       <s-badge tone={STATUS_TONE[exp.status] ?? "info"}>
-                        {exp.status}
+                        {formatStatus(exp.status)}
                       </s-badge>
                     </s-table-cell>
                     <s-table-cell>{exp.pageType}</s-table-cell>
@@ -295,7 +296,7 @@ export default function ExperimentsIndex() {
               <details key={log.id} style={{ borderBottom: "1px solid #e1e3e5", paddingBottom: 8 }}>
                 <summary style={{ cursor: "pointer", listStyle: "none", display: "flex", alignItems: "center", gap: 8 }}>
                   <s-badge tone={STAGE_TONE[log.status] ?? "info"}>{log.stage}</s-badge>
-                  <s-badge>{log.status}</s-badge>
+                  <s-badge>{formatStatus(log.status)}</s-badge>
                   <s-text>
                     {relativeTime(String(log.startedAt))} — run {String(log.runId).slice(-8)}
                   </s-text>

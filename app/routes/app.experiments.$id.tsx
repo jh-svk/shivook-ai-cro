@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { canActivateExperiment } from "../../lib/concurrentTestManager.server";
+import { formatStatus } from "../../lib/formatText";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -251,7 +252,7 @@ export default function ExperimentDetail() {
         <s-stack direction="block" gap="base">
           <s-stack direction="inline" gap="base">
             <s-badge tone={STATUS_TONE[experiment.status] ?? "info"}>
-              {experiment.status}
+              {formatStatus(experiment.status)}
             </s-badge>
           </s-stack>
           <s-paragraph>{experiment.hypothesis}</s-paragraph>

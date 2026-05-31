@@ -8,6 +8,7 @@ import { enqueueDataSync } from "../../jobs/dataSync";
 import { enqueueResearchSynthesis } from "../../jobs/researchSynthesis";
 import { hasPlanFeature } from "../../lib/planGate.server";
 import { enqueueAutoBuild } from "../../jobs/autoBuild";
+import { formatStatus, titleCase } from "../../lib/formatText";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -111,6 +112,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true };
   }
 
+  if (intent === "delete_all_backlog") {
+    const result = await prisma.hypothesis.deleteMany({
+      where: { shopId: shop.id, status: "backlog" },
+    });
+    return { message: `Deleted ${result.count} backlog hypothes${result.count === 1 ? "is" : "es"}.` };
+  }
+
   return { error: "Unknown action." };
 };
 
@@ -186,7 +194,7 @@ export default function HypothesesPage() {
                     : "info"
                 }
               >
-                {latestReport.status}
+                {formatStatus(latestReport.status)}
               </s-badge>
             </s-paragraph>
           )}
@@ -215,6 +223,29 @@ export default function HypothesesPage() {
       {backlog.length > 0 && (
         <s-section heading={`Backlog (${backlog.length})`}>
           <s-stack direction="block" gap="base">
+            <Form
+              method="post"
+              style={{ alignSelf: "flex-end" }}
+              onSubmit={(e) => {
+                if (
+                  !window.confirm(
+                    `Delete all ${backlog.length} backlog hypotheses? This cannot be undone.`
+                  )
+                ) {
+                  e.preventDefault();
+                }
+              }}
+            >
+              <input type="hidden" name="intent" value="delete_all_backlog" />
+              <s-button
+                type="submit"
+                variant="secondary"
+                tone="critical"
+                {...(isSubmitting ? { loading: true } : {})}
+              >
+                Delete all backlog
+              </s-button>
+            </Form>
             {backlog.map((h) => {
               const ice = iceLabel(Math.round(h.iceScore));
               return (
@@ -239,10 +270,10 @@ export default function HypothesesPage() {
                         visitorType?: string | null;
                       };
                       const tags: string[] = [];
-                      if (seg.deviceType) tags.push(seg.deviceType.charAt(0).toUpperCase() + seg.deviceType.slice(1));
-                      if (seg.geoCountry?.length) tags.push(seg.geoCountry.join(", "));
-                      if (seg.trafficSource) tags.push(seg.trafficSource + " traffic");
-                      if (seg.visitorType) tags.push(seg.visitorType + " visitors");
+                      if (seg.deviceType) tags.push(titleCase(seg.deviceType));
+                      if (seg.geoCountry?.length) tags.push(seg.geoCountry.join(", ").toUpperCase());
+                      if (seg.trafficSource) tags.push(titleCase(`${seg.trafficSource} traffic`));
+                      if (seg.visitorType) tags.push(titleCase(`${seg.visitorType} visitors`));
                       if (tags.length === 0) return null;
                       return (
                         <s-stack direction="inline" gap="small">
@@ -313,7 +344,7 @@ export default function HypothesesPage() {
                 borderRadius="base"
               >
                 <s-stack direction="inline" gap="base">
-                  <s-badge tone="success">promoted</s-badge>
+                  <s-badge tone="success">Promoted</s-badge>
                   <s-text>{h.title}</s-text>
                   {h.promotedExperimentId && (
                     <s-link href={`/app/experiments/${h.promotedExperimentId}`}>
@@ -338,7 +369,7 @@ export default function HypothesesPage() {
                 borderRadius="base"
               >
                 <s-stack direction="inline" gap="base">
-                  <s-badge tone="neutral">rejected</s-badge>
+                  <s-badge tone="neutral">Rejected</s-badge>
                   <s-text>{h.title}</s-text>
                 </s-stack>
               </s-box>
