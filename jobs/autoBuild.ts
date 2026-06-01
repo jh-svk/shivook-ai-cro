@@ -89,6 +89,21 @@ DO NOT REBUILD COMPLEX INTERACTIVE WIDGETS:
   adjust prominence via CSS, or add a static informational element. When in doubt,
   prefer a CSS-only restyle of what's already there over rebuilding it in JS.
 
+NEVER DEPEND ON CONTENT THAT MIGHT BE EMPTY (the variant must ALWAYS produce a
+visible change):
+- Do NOT build a variant whose only effect is conditional on store data that may
+  be missing — e.g. reading meta[name="description"], a product metafield, a
+  review count, or an inventory number, and bailing out (return/no-op) when it's
+  absent. On many stores that data is empty, so the variant silently does nothing
+  and the test is wasted.
+- If your idea needs such data, you MUST include a sensible STATIC fallback so the
+  variant still renders a real change when the data is missing (e.g. a fixed
+  benefit line written from the hypothesis itself). The treatment must visibly
+  differ from control on EVERY page load, not just when optional data happens to
+  exist.
+- Prefer changes that rely only on content guaranteed to be present (the product
+  title, price, the existing CTA, the hero image) plus your own added copy.
+
 TARGET ONE ELEMENT, NOT EVERY MATCH (critical):
 - A class name is almost always reused across the page (e.g. Dawn uses
   .banner__heading on the hero AND on other promo banners; heading classes like
