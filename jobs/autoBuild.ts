@@ -282,20 +282,28 @@ async function designCritique(
       messages: [
         {
           role: "user",
-          content: `You are a Shopify front-end design reviewer.
-Review this generated variant against the store's design system.
+          content: `You are a Shopify front-end design reviewer. Judge whether this variant is
+safe to ship and visually on-brand. Be pragmatic — only FAIL for things that would
+actually look wrong or break, NOT for stylistic nitpicks.
 Return ONLY valid JSON — no explanation, no markdown fences.
 Shape: { "passed": boolean, "failedItems": string[], "specificFixes": string[] }
 
-Rubric (check each — fail if violated):
-1. No hardcoded hex color values in CSS patch
-2. No hardcoded font-family strings (must use CSS var or inherit)
-3. No introduced box-shadow, text-shadow, gradients, or transitions absent from token set
-4. Spacing uses relative units (rem, em, %) or CSS vars — no arbitrary px values
-5. No CSS class names that would conflict with Shopify theme namespacing
-6. No use of eval(), document.write(), or other dangerous JS patterns
+FAIL (set passed=false) ONLY if any of these BLOCKING issues are present:
+1. Hardcoded hex/rgb color literals in the CSS that should use a store color token
+   (the store exposes color tokens — colors must reference them, not be invented).
+2. Hardcoded font-family strings instead of the store's font tokens or inherit.
+3. Dangerous JS: eval(), document.write(), new Function on remote input, or network
+   calls to non-Shopify origins.
+4. Obviously broken: references a CSS var that doesn't exist, or malformed CSS/HTML.
 
-Store CSS custom properties:
+DO NOT FAIL for (these are ACCEPTABLE — never list them):
+- px spacing/sizing values (padding, margin, min-height, font-size in px) — fine.
+- The variant defining its own new class names or ids — fine and expected, as long
+  as they are clearly variant-scoped (e.g. cro-*, ab-*, or a unique prefix).
+- box-shadow / transition / border-radius used tastefully.
+- Reasonable, self-contained DOM manipulation.
+
+Store CSS custom properties (colors/fonts the variant SHOULD reuse):
 ${JSON.stringify(cssVars, null, 2)}
 
 Generated variant:

@@ -179,7 +179,11 @@ each segment has different needs, so a test must be tailored to one. Use ONLY th
 Rules:
 - deviceType is REQUIRED on every hypothesis.
 - Generate AT MOST ONE hypothesis per (pageType + segment) combination — never two tests competing for the same audience+page.
-- Spread hypotheses across DIFFERENT segment+page combinations to maximise coverage.
+- MAXIMISE COVERAGE: spread the hypotheses widely across DIFFERENT page types AND different
+  devices/visitor types. Do NOT cluster everything on one segment. Concretely: cover multiple
+  page types (product, collection, cart, homepage) AND vary the device (${JSON.stringify(avail.deviceTypes)})
+  and visitor type (${JSON.stringify(avail.visitorTypes)}, or null) across the set. Aim to touch every
+  page type at least once and both device types at least once before repeating a page type.
 - These (pageType + segment) combinations ALREADY exist in the backlog — DO NOT generate any hypothesis for these:
 ${coveredCombos.length ? coveredCombos.map((c) => "  - " + c).join("\n") : "  (none yet)"}
 

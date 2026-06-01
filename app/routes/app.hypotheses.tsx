@@ -140,6 +140,36 @@ const ICE_TONE: Record<string, "success" | "warning" | "critical"> = {
   low: "critical",
 };
 
+type BadgeTone = "info" | "success" | "warning" | "critical" | "neutral";
+
+// Color-coded labels — each value gets a stable, distinct tone for quick scanning.
+const PAGE_TONE: Record<string, BadgeTone> = {
+  product: "info",
+  collection: "success",
+  cart: "warning",
+  homepage: "critical",
+  any: "neutral",
+};
+const DEVICE_TONE: Record<string, BadgeTone> = {
+  mobile: "info",
+  desktop: "success",
+  tablet: "warning",
+};
+const VISITOR_TONE: Record<string, BadgeTone> = {
+  new: "success",
+  returning: "info",
+  purchaser: "warning",
+};
+const ELEMENT_TONE: Record<string, BadgeTone> = {
+  headline: "info",
+  cta: "success",
+  trust: "warning",
+  price: "critical",
+  image: "neutral",
+  layout: "neutral",
+  other: "neutral",
+};
+
 function iceLabel(score: number): { label: string; tone: "success" | "warning" | "critical" } {
   if (score >= 500) return { label: `ICE ${score} — High`, tone: "success" };
   if (score >= 200) return { label: `ICE ${score} — Medium`, tone: "warning" };
@@ -174,14 +204,32 @@ export default function HypothesesPage() {
 
   const [researching, setResearching] = useState(false);
   const [, setTick] = useState(0); // 1s heartbeat to re-render the elapsed timer
+  // Anchor the timer to a timestamp PERSISTED in localStorage so it keeps
+  // counting from the real start across a page refresh (instead of resetting).
   const startRef = useRef<number | null>(null);
 
+  const readStart = (): number | null => {
+    try {
+      const v = window.localStorage.getItem("cro_research_started_at");
+      return v ? parseInt(v, 10) : null;
+    } catch { return null; }
+  };
+  const writeStart = (ts: number | null) => {
+    try {
+      if (ts == null) window.localStorage.removeItem("cro_research_started_at");
+      else window.localStorage.setItem("cro_research_started_at", String(ts));
+    } catch { /* private mode */ }
+  };
+
   // Start on submit, while the report is pending, or while we're still waiting
-  // for the hypotheses to be written.
+  // for the hypotheses to be written. Reuse a persisted start time if present.
   useEffect(() => {
     if ((isGenerating || reportPending || awaitingHypotheses) && !researching) {
+      const existing = readStart();
+      const start = existing ?? Date.now();
+      if (!existing) writeStart(start);
+      startRef.current = start;
       setResearching(true);
-      startRef.current = Date.now();
     }
   }, [isGenerating, reportPending, awaitingHypotheses, researching]);
 
@@ -206,6 +254,7 @@ export default function HypothesesPage() {
     if (latestReportHypCount > 0 || reportFailed || elapsed > 360) {
       setResearching(false);
       startRef.current = null;
+      writeStart(null);
     }
   }, [researching, latestReportHypCount, reportFailed]);
 
@@ -348,8 +397,11 @@ export default function HypothesesPage() {
                     <s-stack direction="inline" gap="base">
                       <s-heading>{h.title}</s-heading>
                       <s-badge tone={ice.tone}>{ice.label}</s-badge>
-                      <s-badge>{h.pageType}</s-badge>
-                      <s-badge>{h.elementType}</s-badge>
+                      <s-badge tone={ELEMENT_TONE[h.elementType] ?? "neutral"}>{h.elementType}</s-badge>
+                    </s-stack>
+                    <s-stack direction="inline" gap="small">
+                      <s-text tone="neutral">Page:</s-text>
+                      <s-badge tone={PAGE_TONE[h.pageType] ?? "neutral"}>{titleCase(h.pageType)}</s-badge>
                     </s-stack>
                     {h.recommendedSegment && (() => {
                       const seg = h.recommendedSegment as {
@@ -358,16 +410,16 @@ export default function HypothesesPage() {
                         trafficSource?: string | null;
                         visitorType?: string | null;
                       };
-                      const tags: string[] = [];
-                      if (seg.deviceType) tags.push(titleCase(seg.deviceType));
-                      if (seg.geoCountry?.length) tags.push(seg.geoCountry.join(", ").toUpperCase());
-                      if (seg.trafficSource) tags.push(titleCase(`${seg.trafficSource} traffic`));
-                      if (seg.visitorType) tags.push(titleCase(`${seg.visitorType} visitors`));
+                      const tags: { label: string; tone: BadgeTone }[] = [];
+                      if (seg.deviceType) tags.push({ label: titleCase(seg.deviceType), tone: DEVICE_TONE[seg.deviceType] ?? "info" });
+                      if (seg.geoCountry?.length) tags.push({ label: seg.geoCountry.join(", ").toUpperCase(), tone: "warning" });
+                      if (seg.trafficSource) tags.push({ label: titleCase(`${seg.trafficSource} traffic`), tone: "critical" });
+                      if (seg.visitorType) tags.push({ label: titleCase(`${seg.visitorType} visitors`), tone: VISITOR_TONE[seg.visitorType] ?? "success" });
                       if (tags.length === 0) return null;
                       return (
                         <s-stack direction="inline" gap="small">
                           <s-text tone="neutral">Target:</s-text>
-                          {tags.map((t, i) => <s-badge key={i} tone="info">{t}</s-badge>)}
+                          {tags.map((t, i) => <s-badge key={i} tone={t.tone}>{t.label}</s-badge>)}
                         </s-stack>
                       );
                     })()}
