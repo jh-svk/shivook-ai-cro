@@ -203,8 +203,16 @@
 
     if (jsPatch) {
       try {
+        // Some generated variants wrap their JS in <script>…</script>. new Function
+        // expects raw JS, so a wrapped patch is a syntax error and the variant
+        // silently does nothing. Strip any <script> wrapper before executing.
+        var code = jsPatch;
+        if (/<script[\s>]/i.test(code)) {
+          var inner = code.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, '');
+          code = inner.trim();
+        }
         // eslint-disable-next-line no-new-func
-        withVisiblePreferredQuery(function () { (new Function(jsPatch))(); });
+        withVisiblePreferredQuery(function () { (new Function(code))(); });
       } catch (_) {}
     }
   }

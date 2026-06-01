@@ -177,23 +177,35 @@ type VariantPatches = {
 };
 
 /**
- * Move inline <script> blocks out of htmlPatch into jsPatch. Claude frequently
- * embeds variant JS as a synchronous <script> in the HTML, which (a) trips the
- * QA gate and (b) wouldn't run anyway — scripts inserted via innerHTML don't
- * execute. The theme extension runs jsPatch explicitly, so lifting them out
- * both passes QA and makes the variant actually function.
+ * Normalise <script> tags out of the patches. Claude frequently:
+ *  (a) embeds variant JS as a <script> in the HTML patch — which trips the QA
+ *      gate and wouldn't run anyway (innerHTML scripts don't execute), and
+ *  (b) wraps the JS PATCH itself in <script>…</script> — which is a syntax
+ *      error for `new Function(jsPatch)`, so the variant silently does nothing.
+ * The theme extension runs jsPatch as raw JS, so we lift HTML scripts into
+ * jsPatch and unwrap any <script> wrapper around jsPatch.
  */
 function extractInlineScripts(patches: VariantPatches): void {
-  if (!patches.htmlPatch || !/<script/i.test(patches.htmlPatch)) return;
-  const scripts: string[] = [];
-  patches.htmlPatch = patches.htmlPatch
-    .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, (_m, js: string) => {
-      if (js && js.trim()) scripts.push(js.trim());
-      return "";
-    })
-    .trim();
-  if (scripts.length) {
-    patches.jsPatch = [patches.jsPatch, ...scripts].filter(Boolean).join("\n");
+  // (a) Lift <script> blocks out of the HTML patch into jsPatch.
+  if (patches.htmlPatch && /<script/i.test(patches.htmlPatch)) {
+    const scripts: string[] = [];
+    patches.htmlPatch = patches.htmlPatch
+      .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, (_m, js: string) => {
+        if (js && js.trim()) scripts.push(js.trim());
+        return "";
+      })
+      .trim();
+    if (scripts.length) {
+      patches.jsPatch = [patches.jsPatch, ...scripts].filter(Boolean).join("\n");
+    }
+  }
+
+  // (b) Unwrap a <script>…</script> wrapper around the JS patch itself.
+  if (patches.jsPatch && /<script[\s>]/i.test(patches.jsPatch)) {
+    patches.jsPatch = patches.jsPatch
+      .replace(/<script[^>]*>/gi, "")
+      .replace(/<\/script>/gi, "")
+      .trim();
   }
 }
 

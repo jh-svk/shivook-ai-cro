@@ -5,7 +5,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { canActivateExperiment } from "../../lib/concurrentTestManager.server";
-import { formatStatus, humanizeMetric, humanizeMetricsInText } from "../../lib/formatText";
+import { formatStatus, humanizeMetric, humanizeMetricsInText, titleCase } from "../../lib/formatText";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -623,12 +623,26 @@ export default function ExperimentDetail() {
               {new Date(experiment.concludedAt).toLocaleDateString()}
             </s-paragraph>
           )}
-          {experiment.segment && (
-            <s-paragraph>
-              <s-text>Segment: </s-text>
-              {experiment.segment.name}
-            </s-paragraph>
-          )}
+          <s-paragraph>
+            <s-text>Device: </s-text>
+            {experiment.segment?.deviceType
+              ? titleCase(experiment.segment.deviceType)
+              : "All"}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Audience: </s-text>
+            {experiment.segment?.visitorType
+              ? titleCase(experiment.segment.visitorType) + " visitors"
+              : experiment.segment?.trafficSource
+              ? titleCase(experiment.segment.trafficSource) + " traffic"
+              : "All"}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Geo: </s-text>
+            {experiment.segment?.geoCountry && experiment.segment.geoCountry.length > 0
+              ? experiment.segment.geoCountry.join(", ")
+              : "All"}
+          </s-paragraph>
         </s-stack>
       </s-section>
     </s-page>
