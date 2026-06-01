@@ -593,15 +593,35 @@ export default function ExperimentDetail() {
         <s-stack direction="block" gap="base">
           <s-paragraph>
             <s-text>Page type: </s-text>
-            {experiment.pageType}
+            {titleCase(experiment.pageType)}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Device: </s-text>
+            {experiment.segment?.deviceType
+              ? titleCase(experiment.segment.deviceType)
+              : "All"}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Audience: </s-text>
+            {experiment.segment?.visitorType
+              ? titleCase(experiment.segment.visitorType) + " visitors"
+              : experiment.segment?.trafficSource
+              ? titleCase(experiment.segment.trafficSource) + " traffic"
+              : "All"}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Geo: </s-text>
+            {experiment.segment?.geoCountry && experiment.segment.geoCountry.length > 0
+              ? experiment.segment.geoCountry.join(", ")
+              : "All"}
           </s-paragraph>
           <s-paragraph>
             <s-text>Element: </s-text>
-            {experiment.elementType}
+            {titleCase(experiment.elementType)}
           </s-paragraph>
           <s-paragraph>
             <s-text>Target metric: </s-text>
-            {humanizeMetric(experiment.targetMetric)}
+            {titleCase(humanizeMetric(experiment.targetMetric))}
           </s-paragraph>
           <s-paragraph>
             <s-text>Traffic split: </s-text>
@@ -623,26 +643,6 @@ export default function ExperimentDetail() {
               {new Date(experiment.concludedAt).toLocaleDateString()}
             </s-paragraph>
           )}
-          <s-paragraph>
-            <s-text>Device: </s-text>
-            {experiment.segment?.deviceType
-              ? titleCase(experiment.segment.deviceType)
-              : "All"}
-          </s-paragraph>
-          <s-paragraph>
-            <s-text>Audience: </s-text>
-            {experiment.segment?.visitorType
-              ? titleCase(experiment.segment.visitorType) + " visitors"
-              : experiment.segment?.trafficSource
-              ? titleCase(experiment.segment.trafficSource) + " traffic"
-              : "All"}
-          </s-paragraph>
-          <s-paragraph>
-            <s-text>Geo: </s-text>
-            {experiment.segment?.geoCountry && experiment.segment.geoCountry.length > 0
-              ? experiment.segment.geoCountry.join(", ")
-              : "All"}
-          </s-paragraph>
         </s-stack>
       </s-section>
     </s-page>

@@ -66,7 +66,28 @@ Design principles you MUST follow:
 - One clear visual focal point per element — clear hierarchy
 - Never introduce gradients, drop shadows, pill borders, or animations unless they already exist in the store's design system
 - Mobile-first: size all elements for touch targets (min 44px)
-- Minimal markup: add only what is needed, nothing decorative that isn't earned`;
+- Minimal markup: add only what is needed, nothing decorative that isn't earned
+
+RESPECT THE PAGE LAYOUT (critical — variants that ignore this look broken):
+- The theme wraps page content in a centred container with horizontal padding
+  (e.g. .page-width, .container, .shopify-section .page-width). If you insert a
+  new full-width element, it must NOT span edge-to-edge with content touching the
+  viewport border. Either insert your element INSIDE that existing width-
+  constrained container, or give your own wrapper the same horizontal padding the
+  page uses (max-width: var(--page-width); margin: 0 auto; with side padding).
+- Match the page's existing left/right alignment so your block lines up with the
+  content around it. Never let text hug the raw left edge of the screen.
+
+DO NOT REBUILD COMPLEX INTERACTIVE WIDGETS:
+- Never clone, re-implement, or rebuild theme-driven interactive systems whose
+  behaviour depends on the theme's own JavaScript — e.g. collection FILTER/FACET
+  systems, sort controls, cart drawers, product-variant pickers, mega-menus,
+  predictive search. Cloned controls look real but their click handlers won't
+  work, producing dead buttons.
+- If a hypothesis targets such a widget, change only SAFE, self-contained things:
+  restyle/reposition the EXISTING control (don't duplicate it), change copy/labels,
+  adjust prominence via CSS, or add a static informational element. When in doubt,
+  prefer a CSS-only restyle of what's already there over rebuilding it in JS.`;
 }
 
 function buildUserPrompt(
