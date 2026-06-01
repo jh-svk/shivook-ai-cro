@@ -26,6 +26,9 @@ export interface ShopifyFunnelSnapshot {
     purchased: number;
   };
   topCountriesByRevenue?: Array<{ country: string; orderCount: number; revenue: number }>;
+  // Traffic source breakdown from Shopify's own order attribution
+  // (customerJourneySummary) — no GA4 required.
+  trafficSources?: Array<{ source: string; orderCount: number }>;
 }
 
 const ORDERS_QUERY = `
@@ -36,6 +39,12 @@ const ORDERS_QUERY = `
           id
           totalPriceSet { shopMoney { amount } }
           billingAddress { countryCodeV2 }
+          customerJourneySummary {
+            firstVisit {
+              sourceType
+              utmParameters { source medium }
+            }
+          }
           lineItems(first: 5) {
             edges {
               node {
@@ -51,6 +60,27 @@ const ORDERS_QUERY = `
     }
   }
 `;
+
+/**
+ * Map Shopify's order attribution to our segment trafficSource vocabulary:
+ * paid | organic | social | email | direct. Derived from the first-visit
+ * sourceType + UTM medium that Shopify already records — no GA4 needed.
+ */
+function classifyTrafficSource(firstVisit: {
+  sourceType?: string | null;
+  utmParameters?: { source?: string | null; medium?: string | null } | null;
+} | null | undefined): string {
+  const medium = (firstVisit?.utmParameters?.medium ?? "").toLowerCase();
+  const source = (firstVisit?.utmParameters?.source ?? "").toLowerCase();
+  const type = (firstVisit?.sourceType ?? "").toLowerCase();
+
+  if (medium === "cpc" || medium === "ppc" || medium === "paid" || /paid|ads?/.test(type)) return "paid";
+  if (medium === "email" || source === "email" || type === "email") return "email";
+  if (medium === "social" || /facebook|instagram|tiktok|twitter|pinterest|social/.test(source + type)) return "social";
+  if (medium === "organic" || /search|seo|organic/.test(type)) return "organic";
+  if (type === "direct" || (!type && !medium)) return "direct";
+  return "direct";
+}
 
 async function shopifyGraphQL(
   shop: Pick<Shop, "shopifyDomain" | "accessToken">,
@@ -156,6 +186,18 @@ export async function fetchShopifyFunnelSnapshot(
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 10);
 
+  // Traffic source roll-up from Shopify's own attribution (no GA4 needed)
+  const trafficMap = new Map<string, number>();
+  for (const order of orders) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fv = (order as any).customerJourneySummary?.firstVisit;
+    const source = classifyTrafficSource(fv);
+    trafficMap.set(source, (trafficMap.get(source) ?? 0) + 1);
+  }
+  const trafficSources = [...trafficMap.entries()]
+    .map(([source, orderCount]) => ({ source, orderCount }))
+    .sort((a, b) => b.orderCount - a.orderCount);
+
   return {
     period: "last_30_days",
     orders: orderCount,
@@ -165,5 +207,6 @@ export async function fetchShopifyFunnelSnapshot(
     topProducts,
     checkoutFunnel: { addedToCart: 0, reachedCheckout: 0, purchased: orderCount },
     topCountriesByRevenue,
+    trafficSources,
   };
 }

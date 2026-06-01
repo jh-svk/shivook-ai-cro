@@ -81,9 +81,16 @@ function buildAvailableSegments(dataSnapshot: unknown): AvailableSegments {
   const ga4Geo = snap?.ga4?.segmentBreakdown?.topCountries;
   if (Array.isArray(ga4Geo)) for (const c of ga4Geo) if (c?.country) geo.push(c.country);
 
+  // Traffic source comes from Shopify's own order attribution (no GA4 needed).
   const trafficSources: string[] = [];
-  const ga4Traffic = snap?.ga4?.segmentBreakdown?.trafficSource;
-  if (ga4Traffic && typeof ga4Traffic === "object") trafficSources.push(...Object.keys(ga4Traffic));
+  const shopifyTraffic = snap?.shopifyFunnel?.trafficSources;
+  if (Array.isArray(shopifyTraffic)) {
+    for (const t of shopifyTraffic) {
+      // Only offer a source backed by a meaningful number of real orders, and
+      // skip "direct" (not an actionable acquisition channel to test against).
+      if (t?.source && t.source !== "direct" && (t.orderCount ?? 0) >= 3) trafficSources.push(t.source);
+    }
+  }
 
   return {
     deviceTypes: ["mobile", "desktop"],
