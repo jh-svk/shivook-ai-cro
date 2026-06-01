@@ -136,6 +136,48 @@
     return type;
   }
 
+  // ── Visibility helper ────────────────────────────────────────────────────────
+  // Many themes (e.g. Dawn) render a HIDDEN duplicate of an element — the cart
+  // DRAWER contains the same `.cart__checkout-button` as the visible cart page.
+  // A naive querySelector returns the first match, which is often the hidden one,
+  // so a variant injects into an invisible container and "does nothing".
+  function croVisible(el) {
+    if (!el) return false;
+    if (typeof el.checkVisibility === 'function') {
+      try { return el.checkVisibility({ visibilityProperty: true, contentVisibilityAuto: true }); } catch (_) {}
+    }
+    var rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    var node = el;
+    while (node && node.nodeType === 1) {
+      var cs;
+      try { cs = getComputedStyle(node); } catch (_) { return true; }
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      node = node.parentElement;
+    }
+    return true;
+  }
+
+  // Run `fn` with document.querySelector temporarily preferring a VISIBLE match
+  // (falling back to the first match if none are visible). Scoped to the variant's
+  // synchronous execution, then restored — the theme's own code is unaffected.
+  function withVisiblePreferredQuery(fn) {
+    var nativeQS = document.querySelector;
+    var nativeQSA = document.querySelectorAll.bind(document);
+    document.querySelector = function (sel) {
+      try {
+        var matches = nativeQSA(sel);
+        for (var i = 0; i < matches.length; i++) {
+          if (croVisible(matches[i])) return matches[i];
+        }
+        return matches.length ? matches[0] : null;
+      } catch (_) {
+        try { return nativeQS.call(document, sel); } catch (_2) { return null; }
+      }
+    };
+    try { fn(); } finally { document.querySelector = nativeQS; }
+  }
+
   // ── DOM patching ────────────────────────────────────────────────────────────
   function applyPatch(htmlPatch, cssPatch, jsPatch) {
     if (cssPatch) {
@@ -162,7 +204,7 @@
     if (jsPatch) {
       try {
         // eslint-disable-next-line no-new-func
-        (new Function(jsPatch))();
+        withVisiblePreferredQuery(function () { (new Function(jsPatch))(); });
       } catch (_) {}
     }
   }
