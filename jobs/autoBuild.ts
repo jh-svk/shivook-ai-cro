@@ -87,7 +87,23 @@ DO NOT REBUILD COMPLEX INTERACTIVE WIDGETS:
 - If a hypothesis targets such a widget, change only SAFE, self-contained things:
   restyle/reposition the EXISTING control (don't duplicate it), change copy/labels,
   adjust prominence via CSS, or add a static informational element. When in doubt,
-  prefer a CSS-only restyle of what's already there over rebuilding it in JS.`;
+  prefer a CSS-only restyle of what's already there over rebuilding it in JS.
+
+TARGET ONE ELEMENT, NOT EVERY MATCH (critical):
+- A class name is almost always reused across the page (e.g. Dawn uses
+  .banner__heading on the hero AND on other promo banners; heading classes like
+  .h1/.h2 appear on many sections). If your hypothesis is about ONE element (e.g.
+  "the hero headline"), you MUST modify only the SINGLE intended element — never
+  loop over querySelectorAll and change every match.
+- Use document.querySelector (first match) NOT querySelectorAll-with-forEach when
+  the change is meant for one element. The injector already prefers the first
+  VISIBLE match. To be safe, also pick the FIRST match and stop.
+- Scope to the right region when possible: the homepage hero is the FIRST banner/
+  section on the page — prefer a selector anchored to it (e.g. the first
+  .banner__heading inside the first relevant section) rather than a bare class
+  that matches multiple sections.
+- Never let a single-element change cascade into rewriting every heading/section
+  on the page.`;
 }
 
 function buildUserPrompt(
