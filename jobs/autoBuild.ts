@@ -12,9 +12,12 @@ import { enqueueQaReview } from "./qaReview";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import { hasPlanFeature } from "../lib/planGate.server";
+import { fetchStorefrontHtml } from "../lib/themeTokenExtractor.server";
+import { validateVariantAgainstHtml } from "../lib/variantValidator.server";
 
 interface ThemeTokensShape {
   cssVars?: Record<string, string>;
+  sampleUrls?: { product?: string | null; collection?: string | null };
   componentHtml?: Record<string, string>;
   domVocabulary?: { classes?: string[]; ids?: string[]; dataAttrs?: string[] };
   realSelectors?: { headings?: string[]; buttons?: string[] };
@@ -423,6 +426,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     include: {
       shop: {
         select: {
+          shopifyDomain: true,
           brandGuardrails: true,
           themeTokens: true,
         },
@@ -653,6 +657,70 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     } else {
       console.log(`[autoBuild] design critique passed on first attempt for ${hypothesisId}`);
     }
+  }
+
+  // ── Render validation: does the variant ACTUALLY change the real page? ─────
+  // Structural guards pass code that's well-formed but still no-ops (e.g. targets
+  // an element/relationship that doesn't exist on this theme, or gates on missing
+  // data). Fetch the real target page, run the variant against a lightweight DOM,
+  // and retry once if it produced no change.
+  try {
+    const sampleUrls = (hypothesis.shop.themeTokens as ThemeTokensShape | null)?.sampleUrls;
+    const targetPath =
+      hypothesis.pageType === "product" ? sampleUrls?.product ?? "/"
+      : hypothesis.pageType === "collection" ? sampleUrls?.collection ?? "/"
+      : hypothesis.pageType === "cart" ? "/cart"
+      : "/";
+    const pageHtml = await fetchStorefrontHtml(hypothesis.shop.shopifyDomain, targetPath);
+
+    let render = validateVariantAgainstHtml({
+      htmlPatch: patches.htmlPatch ?? null,
+      cssPatch: patches.cssPatch ?? null,
+      jsPatch: patches.jsPatch ?? null,
+      pageType: hypothesis.pageType,
+      pageHtml,
+    });
+
+    if (!render.ok) {
+      console.log(`[autoBuild] render validation failed for ${hypothesisId}: ${render.reason} — retrying`);
+      const retryPrompt =
+        buildUserPrompt(
+          hypothesis.title, hypothesis.hypothesis, hypothesis.pageType,
+          hypothesis.elementType, hypothesis.targetMetric,
+          hypothesis.shop.brandGuardrails, hypothesis.shop.themeTokens,
+        ) +
+        `\n\n## Render check FAILED — your previous variant produced NO visible change on the real page.\n` +
+        `Reason: ${render.detail}\n` +
+        `Rewrite so the treatment VISIBLY changes the page on every load. Target elements that actually exist on THIS page, ` +
+        `do not scope a lookup inside a wrapper the element isn't part of, and include a static fallback instead of bailing out when optional data is missing.`;
+      const retryResp = await client.messages.create({
+        model: "claude-sonnet-4-6", max_tokens: 8192, system: buildSystemPrompt(),
+        messages: [{ role: "user", content: retryPrompt }],
+      });
+      const rr = retryResp.content[0];
+      if (rr.type === "text") {
+        const rjson = rr.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+        try {
+          const retried = JSON.parse(rjson);
+          extractInlineScripts(retried);
+          const render2 = validateVariantAgainstHtml({
+            htmlPatch: retried.htmlPatch ?? null, cssPatch: retried.cssPatch ?? null,
+            jsPatch: retried.jsPatch ?? null, pageType: hypothesis.pageType, pageHtml,
+          });
+          if (render2.ok) { patches = retried; render = render2; }
+        } catch { /* keep original; render stays failed */ }
+      }
+      if (!render.ok) {
+        await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
+        await logOrchestrator(shopId, runId, "RENDER_CHECK", "failed", { hypothesisId, reason: render.reason, detail: render.detail });
+        console.log(`[autoBuild] render validation failed after retry for ${hypothesisId} — marked qa_failed`);
+        return;
+      }
+      console.log(`[autoBuild] render validation passed after retry for ${hypothesisId}`);
+    }
+  } catch (err) {
+    // Never block a build on the validator infra itself failing.
+    console.warn(`[autoBuild] render validation skipped for ${hypothesisId}:`, err);
   }
 
   const { htmlPatch, cssPatch, jsPatch, variantDescription } = patches;

@@ -176,7 +176,7 @@ function findCollectionPath(html: string): string | null {
 
 // ─── Async orchestration ─────────────────────────────────────────────────────
 
-async function fetchStorefrontHtml(shopDomain: string, path = "/"): Promise<string> {
+export async function fetchStorefrontHtml(shopDomain: string, path = "/"): Promise<string> {
   const storefrontPassword = process.env.STOREFRONT_PASSWORD;
   const baseHeaders: Record<string, string> = {
     "User-Agent": "Shivook-CRO-Extractor/1.0",
