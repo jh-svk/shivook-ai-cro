@@ -322,21 +322,44 @@ function salvageJsonArray(raw: string): RawHypothesis[] {
 }
 
 export async function runHypothesisGenerator(shopId: string, reportId: string) {
-  // Segments we can honestly target + (page+segment) combos already in the backlog.
-  const [shopRow, existing] = await Promise.all([
+  // A (page + segment) combo is "taken" if there's already a hypothesis for it
+  // (backlog/building/promoted) OR a live/queued EXPERIMENT for it
+  // (active/paused/pending_approval/draft). Generating a new hypothesis for a
+  // segment that already has a running test would risk simultaneous testing on
+  // the same audience — so we exclude those combos too.
+  const [shopRow, existing, liveExperiments] = await Promise.all([
     prisma.shop.findUnique({ where: { id: shopId }, select: { dataSnapshot: true } }),
     prisma.hypothesis.findMany({
       where: { shopId, status: { in: ["backlog", "building", "promoted"] } },
       select: { pageType: true, recommendedSegment: true },
     }),
+    prisma.experiment.findMany({
+      where: { shopId, status: { in: ["active", "paused", "pending_approval", "draft"] } },
+      select: { pageType: true, segment: true },
+    }),
   ]);
   const avail = buildAvailableSegments(shopRow?.dataSnapshot);
-  const covered = new Set(
-    existing.map((e) => segmentSignature(e.pageType, e.recommendedSegment as SegmentShape | null)),
-  );
-  const coveredCombos = existing.map((e) =>
-    comboLabel(e.pageType, e.recommendedSegment as SegmentShape | null),
-  );
+
+  // Normalise both sources into the same (pageType, segment) shape.
+  const hypoEntries = existing.map((e) => ({
+    pageType: e.pageType,
+    seg: e.recommendedSegment as SegmentShape | null,
+  }));
+  const expEntries = liveExperiments.map((e) => ({
+    pageType: e.pageType,
+    seg: e.segment
+      ? {
+          deviceType: e.segment.deviceType,
+          visitorType: e.segment.visitorType,
+          trafficSource: e.segment.trafficSource,
+          geoCountry: e.segment.geoCountry,
+        } as SegmentShape
+      : null,
+  }));
+  const allEntries = [...hypoEntries, ...expEntries];
+
+  const covered = new Set(allEntries.map((e) => segmentSignature(e.pageType, e.seg)));
+  const coveredCombos = [...new Set(allEntries.map((e) => comboLabel(e.pageType, e.seg)))];
 
   const hypotheses = await generateHypotheses(shopId, reportId, avail, coveredCombos);
 
