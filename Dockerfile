@@ -1,18 +1,5 @@
 FROM node:20-alpine
-# openssl for Prisma; chromium + deps for the visual (geometry) variant validator.
-# We use Alpine's system Chromium and point Playwright at it (Playwright's own
-# downloaded browsers are glibc-built and won't run on Alpine/musl).
-RUN apk add --no-cache \
-  openssl \
-  chromium \
-  nss \
-  freetype \
-  harfbuzz \
-  ttf-freefont \
-  font-noto-emoji
-# Tell Playwright to use the system Chromium and skip its own download.
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+RUN apk add --no-cache openssl
 
 EXPOSE 3000
 
