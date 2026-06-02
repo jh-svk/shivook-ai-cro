@@ -36,6 +36,11 @@ model Shop {
   accessToken            String
   maxConcurrentTests     Int                @default(5)
   requireHumanApproval   Boolean            @default(false)
+  // When true (default), the AI auto-concludes a test once it hits the Bayesian
+  // 95% threshold (after min runtime). When false, the merchant decides when to
+  // pause/end — the AI only flags significance, never auto-concludes. The AOV
+  // guardrail still auto-concludes regardless, as a loss-prevention safety net.
+  autoConcludeEnabled    Boolean            @default(true)
   brandGuardrails        Json?
   themeTokens            Json?
   slackWebhookUrl        String?

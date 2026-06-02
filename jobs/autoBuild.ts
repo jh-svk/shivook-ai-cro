@@ -117,6 +117,20 @@ RESPECT THE PAGE LAYOUT (critical — variants that ignore this look broken):
 - Match the page's existing left/right alignment so your block lines up with the
   content around it. Never let text hug the raw left edge of the screen.
 
+ATTACH RELATIVE TO THE RIGHT ANCHOR, AND MATCH ITS WIDTH:
+- When you add an element near an existing control (e.g. a trust strip "below the
+  Add to Cart button"), match the WIDTH of the element you attach to. Product
+  pages often have BOTH an "Add to cart" AND a "Buy it now" button stacked in the
+  same buy-box; your added element should span the full width of that buy-box
+  (the same width as those buttons), not be narrower or wider than them. Inherit
+  width by inserting into the same container the buttons live in and using
+  width:100% / the container's width — never a fixed px width that differs from
+  the buttons.
+- "Below the Add to Cart button" on a page with multiple stacked CTAs means below
+  the WHOLE buy-button group — place your element after the LAST CTA in the group
+  (e.g. below "Buy it now"), so it doesn't wedge awkwardly between the two buttons.
+- Visually align your element's left and right edges with the buttons above it.
+
 DO NOT REBUILD COMPLEX INTERACTIVE WIDGETS:
 - Never clone, re-implement, or rebuild theme-driven interactive systems whose
   behaviour depends on the theme's own JavaScript — e.g. collection FILTER/FACET

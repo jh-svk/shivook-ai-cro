@@ -115,6 +115,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  if (intent === "ai_generate_all") {
+    const allowed = await hasPlanFeature(shop.id, "auto_build");
+    if (!allowed) {
+      return { error: "AI variant generation requires the Pro plan. Upgrade at /app/billing." };
+    }
+    const backlog = await prisma.hypothesis.findMany({
+      where: { shopId: shop.id, status: "backlog" },
+      select: { id: true },
+    });
+    if (backlog.length === 0) return { error: "No backlog hypotheses to generate." };
+
+    // Mark all as building, then enqueue a build for each — they run in parallel
+    // on the worker pool and land in the Experiments dashboard as they finish.
+    await prisma.hypothesis.updateMany({
+      where: { shopId: shop.id, status: "backlog" },
+      data: { status: "building" },
+    });
+    await Promise.all(backlog.map((h) => enqueueAutoBuild(shop.id, h.id)));
+    return {
+      message: `AI is building variants for all ${backlog.length} backlog hypotheses. Track them in the “Building variants” section of your Experiments dashboard — they'll appear as each one finishes.`,
+    };
+  }
+
   if (intent === "reject") {
     const hypothesisId = String(fd.get("hypothesisId"));
     await prisma.hypothesis.update({
@@ -361,29 +384,53 @@ export default function HypothesesPage() {
       {backlog.length > 0 && (
         <s-section heading={`Backlog (${backlog.length})`}>
           <s-stack direction="block" gap="base">
-            <Form
-              method="post"
-              style={{ alignSelf: "flex-end" }}
-              onSubmit={(e) => {
-                if (
-                  !window.confirm(
-                    `Delete all ${backlog.length} backlog hypotheses? This cannot be undone.`
-                  )
-                ) {
-                  e.preventDefault();
-                }
-              }}
-            >
-              <input type="hidden" name="intent" value="delete_all_backlog" />
-              <s-button
-                type="submit"
-                variant="secondary"
-                tone="critical"
-                {...(isSubmitting ? { loading: true } : {})}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Form
+                method="post"
+                style={{ display: "inline" }}
+                onSubmit={(e) => {
+                  if (
+                    !window.confirm(
+                      `Build AI variants for all ${backlog.length} backlog hypotheses? They'll build in parallel and appear in your Experiments dashboard as each finishes.`
+                    )
+                  ) {
+                    e.preventDefault();
+                  }
+                }}
               >
-                Delete all backlog
-              </s-button>
-            </Form>
+                <input type="hidden" name="intent" value="ai_generate_all" />
+                <s-button
+                  type="submit"
+                  variant="primary"
+                  {...(isSubmitting ? { loading: true } : {})}
+                >
+                  ✨ AI Generate all ({backlog.length})
+                </s-button>
+              </Form>
+              <Form
+                method="post"
+                style={{ display: "inline" }}
+                onSubmit={(e) => {
+                  if (
+                    !window.confirm(
+                      `Delete all ${backlog.length} backlog hypotheses? This cannot be undone.`
+                    )
+                  ) {
+                    e.preventDefault();
+                  }
+                }}
+              >
+                <input type="hidden" name="intent" value="delete_all_backlog" />
+                <s-button
+                  type="submit"
+                  variant="secondary"
+                  tone="critical"
+                  {...(isSubmitting ? { loading: true } : {})}
+                >
+                  Delete all backlog
+                </s-button>
+              </Form>
+            </div>
             {backlog.map((h) => {
               const ice = iceLabel(Math.round(h.iceScore));
               return (
