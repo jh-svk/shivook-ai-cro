@@ -17,6 +17,27 @@ export interface ThemeTokens {
     heading?: string;
     card?: string;
   };
+  /**
+   * Real DOM vocabulary scraped from the live storefront — the set of class
+   * names, ids, and data-* attributes that ACTUALLY exist. The variant builder
+   * is constrained to these so it can't invent selectors that match nothing.
+   */
+  domVocabulary?: {
+    classes: string[];
+    ids: string[];
+    dataAttrs: string[];
+  };
+  /** Curated real selectors by element kind, for prompt grounding. */
+  realSelectors?: {
+    headings: string[];
+    buttons: string[];
+  };
+  /** Real storefront paths for previewing a variant on the right page type. */
+  sampleUrls?: {
+    product?: string | null;
+    collection?: string | null;
+  };
+  capturedPages?: string[];
 }
 
 type ShopForExtraction = Pick<Shop, "id" | "shopifyDomain">;
@@ -25,6 +46,25 @@ const FETCH_TIMEOUT_MS = 10_000;
 
 // ─── Pure functions (exported for testing) ───────────────────────────────────
 
+/**
+ * Bare CSS unit with no numeric component. Shopify themes frequently template
+ * vars from theme settings (e.g. `--media-padding: {{ settings.padding }}px;`).
+ * When the setting is empty this renders to a lone unit like `px` — useless and
+ * actively harmful if a variant interpolates it. We drop these.
+ */
+const BARE_UNIT_RE = /^(?:px|rem|em|%|vh|vw|vmin|vmax|pt|pc|ch|ex|cm|mm|in|q|fr|deg|rad|s|ms)$/i;
+
+/** True if a CSS var value is usable (not empty, not a bare unit, not stray Liquid). */
+export function isUsableCssVarValue(value: string): boolean {
+  const v = value.trim();
+  if (!v) return false;
+  // Un-rendered Liquid template fragments leaked into the CSS
+  if (v.includes("{{") || v.includes("}}") || v.includes("{%")) return false;
+  // Lone unit with no number (empty theme-setting interpolation)
+  if (BARE_UNIT_RE.test(v)) return false;
+  return true;
+}
+
 /** Extract CSS custom properties from raw CSS text (no HTML) */
 export function extractCssVarsFromCss(css: string): Record<string, string> {
   const vars: Record<string, string> = {};
@@ -32,7 +72,8 @@ export function extractCssVarsFromCss(css: string): Record<string, string> {
   for (const block of rootMatches) {
     const varMatches = block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g);
     for (const v of varMatches) {
-      vars[v[1].trim()] = v[2].trim();
+      const value = v[2].trim();
+      if (isUsableCssVarValue(value)) vars[v[1].trim()] = value;
     }
   }
   return vars;
@@ -66,9 +107,76 @@ export function extractComponentHtml(html: string): ThemeTokens["componentHtml"]
   return components;
 }
 
+/** Every class name, id, and data-* attribute name that appears in the HTML. */
+export function extractDomVocabulary(html: string): { classes: string[]; ids: string[]; dataAttrs: string[] } {
+  const classes = new Set<string>();
+  const ids = new Set<string>();
+  const dataAttrs = new Set<string>();
+  for (const m of html.matchAll(/\sclass\s*=\s*"([^"]*)"/gi)) {
+    for (const c of m[1].split(/\s+/)) if (c && c.length <= 60) classes.add(c);
+  }
+  for (const m of html.matchAll(/\sid\s*=\s*"([^"]*)"/gi)) {
+    const id = m[1].trim();
+    if (id && id.length <= 60) ids.add(id);
+  }
+  for (const m of html.matchAll(/\s(data-[a-z0-9-]+)\s*=/gi)) {
+    dataAttrs.add(m[1].toLowerCase());
+  }
+  return { classes: [...classes], ids: [...ids], dataAttrs: [...dataAttrs] };
+}
+
+/** Real, usable selectors for the elements variants most commonly target. */
+export function extractRealSelectors(html: string): { headings: string[]; buttons: string[] } {
+  const headings: string[] = [];
+  const buttons: string[] = [];
+  const seen = new Set<string>();
+  const pick = (classAttr: string | undefined): string | null => {
+    if (!classAttr) return null;
+    const cls = classAttr.split(/\s+/).filter(Boolean);
+    // Prefer a descriptive class — skip state/utility prefixes.
+    return (
+      cls.find((c) => c.length > 3 && !/^(js-|is-|has-|w-|h-|sr-|visually)/.test(c)) ??
+      cls[0] ??
+      null
+    );
+  };
+  const add = (arr: string[], tag: string, classAttr: string | undefined) => {
+    const c = pick(classAttr);
+    const sel = c ? `${tag}.${c}` : tag;
+    if (!seen.has(sel)) {
+      seen.add(sel);
+      arr.push(sel);
+    }
+  };
+  for (const m of html.matchAll(/<(h1|h2|h3)\b([^>]*)>/gi)) {
+    if (headings.length >= 10) break;
+    add(headings, m[1].toLowerCase(), m[2].match(/class\s*=\s*"([^"]*)"/i)?.[1]);
+  }
+  for (const m of html.matchAll(/<(button|a)\b([^>]*)>/gi)) {
+    if (buttons.length >= 10) break;
+    const classAttr = m[2].match(/class\s*=\s*"([^"]*)"/i)?.[1];
+    // Only "buttony" anchors; all <button>s.
+    if (m[1].toLowerCase() === "a" && !(classAttr && /button|btn|cta/i.test(classAttr))) continue;
+    add(buttons, m[1].toLowerCase(), classAttr);
+  }
+  return { headings, buttons };
+}
+
+/** First product URL path found on a page (for sampling product-page structure). */
+function findProductPath(html: string): string | null {
+  const m = html.match(/href\s*=\s*"(\/products\/[A-Za-z0-9\-_%]+)(?:[?#"]|$)/i);
+  return m ? m[1] : null;
+}
+
+/** First collection URL path found on a page (for previewing collection-page tests). */
+function findCollectionPath(html: string): string | null {
+  const m = html.match(/href\s*=\s*"(\/collections\/[A-Za-z0-9\-_%]+)(?:[?#"]|$)/i);
+  return m ? m[1] : null;
+}
+
 // ─── Async orchestration ─────────────────────────────────────────────────────
 
-async function fetchStorefrontHtml(shopDomain: string): Promise<string> {
+export async function fetchStorefrontHtml(shopDomain: string, path = "/"): Promise<string> {
   const storefrontPassword = process.env.STOREFRONT_PASSWORD;
   const baseHeaders: Record<string, string> = {
     "User-Agent": "Shivook-CRO-Extractor/1.0",
@@ -84,7 +192,7 @@ async function fetchStorefrontHtml(shopDomain: string): Promise<string> {
   };
 
   // First attempt — works for non-password-protected stores
-  const firstRes = await abortFetch(`https://${shopDomain}/`, { headers: baseHeaders });
+  const firstRes = await abortFetch(`https://${shopDomain}${path}`, { headers: baseHeaders });
 
   // If redirected to /password and we have a password, do the Shopify form POST
   if (
@@ -119,14 +227,14 @@ async function fetchStorefrontHtml(shopDomain: string): Promise<string> {
     // Step 3: follow the redirect with the session cookie
     const redirectCookie =
       postRes.headers.get("set-cookie")?.split(";")[0] ?? cookie;
-    const homepageRes = await abortFetch(`https://${shopDomain}/`, {
+    const pageRes = await abortFetch(`https://${shopDomain}${path}`, {
       headers: { ...baseHeaders, Cookie: redirectCookie },
     });
-    if (!homepageRes.ok) throw new Error(`HTTP ${homepageRes.status} after password auth`);
-    return homepageRes.text();
+    if (!pageRes.ok) throw new Error(`HTTP ${pageRes.status} after password auth`);
+    return pageRes.text();
   }
 
-  if (!firstRes.ok) throw new Error(`HTTP ${firstRes.status} fetching https://${shopDomain}/`);
+  if (!firstRes.ok) throw new Error(`HTTP ${firstRes.status} fetching https://${shopDomain}${path}`);
   return firstRes.text();
 }
 
@@ -204,6 +312,32 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
 
     const componentHtml = extractComponentHtml(html);
 
+    // ── Real DOM grounding: capture the actual selector vocabulary so the
+    // variant builder targets elements that exist instead of inventing them.
+    const capturedPages = ["homepage"];
+    const vocab = extractDomVocabulary(html);
+    const realSelectors = extractRealSelectors(html);
+    const productPath = findProductPath(html);
+    const collectionPath = findCollectionPath(html);
+
+    // Sample a product page too (different structure from the homepage) so
+    // product-page experiments have real selectors to target.
+    try {
+      if (productPath) {
+        const productHtml = await fetchStorefrontHtml(domain, productPath);
+        const pVocab = extractDomVocabulary(productHtml);
+        const pSelectors = extractRealSelectors(productHtml);
+        vocab.classes = [...new Set([...vocab.classes, ...pVocab.classes])];
+        vocab.ids = [...new Set([...vocab.ids, ...pVocab.ids])];
+        vocab.dataAttrs = [...new Set([...vocab.dataAttrs, ...pVocab.dataAttrs])];
+        realSelectors.headings = [...new Set([...realSelectors.headings, ...pSelectors.headings])];
+        realSelectors.buttons = [...new Set([...realSelectors.buttons, ...pSelectors.buttons])];
+        capturedPages.push("product");
+      }
+    } catch (err) {
+      console.warn(`[themeTokenExtractor] product-page sample failed for ${domain}:`, err);
+    }
+
     if (Object.keys(cssVars).length === 0) {
       console.warn(
         `[themeTokenExtractor] no CSS vars found for ${domain} — store may use a legacy theme`
@@ -215,6 +349,10 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
       storeDomain: domain,
       cssVars,
       componentHtml,
+      domVocabulary: vocab,
+      realSelectors,
+      sampleUrls: { product: productPath, collection: collectionPath },
+      capturedPages,
     };
 
     await prisma.shop.update({
@@ -223,8 +361,9 @@ export async function extractThemeTokens(shop: ShopForExtraction): Promise<void>
     });
 
     console.log(
-      `[themeTokenExtractor] extracted ${Object.keys(cssVars).length} CSS vars, ` +
-        `${Object.keys(componentHtml).length} components for ${domain}`
+      `[themeTokenExtractor] ${domain}: ${Object.keys(cssVars).length} CSS vars, ` +
+        `${vocab.classes.length} classes / ${vocab.ids.length} ids / ${vocab.dataAttrs.length} data-attrs ` +
+        `across [${capturedPages.join(", ")}]`
     );
   } catch (err) {
     console.warn(`[themeTokenExtractor] extraction failed for ${domain}:`, err);

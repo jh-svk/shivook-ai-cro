@@ -64,8 +64,34 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     });
 
+    // All currently-active experiments (lightweight) so the storefront can
+    // enforce one-test-per-visitor across overlapping segments — and release a
+    // visitor whose enrolled test has concluded. Not needed in preview mode.
+    const allActive = isPreview
+      ? []
+      : await prisma.experiment.findMany({
+          where: { shopId: shop.id, status: "active" },
+          select: {
+            id: true,
+            pageType: true,
+            segment: {
+              select: {
+                deviceType: true,
+                geoCountry: true,
+                trafficSource: true,
+                visitorType: true,
+                timeOfDayFrom: true,
+                timeOfDayTo: true,
+                dayOfWeek: true,
+                productCategory: true,
+                cartState: true,
+              },
+            },
+          },
+        });
+
     return Response.json(
-      { experiments },
+      { experiments, allActive },
       {
         headers: {
           "Cache-Control": "no-store",

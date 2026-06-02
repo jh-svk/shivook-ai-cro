@@ -66,6 +66,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const slackWebhookUrl =
     String(fd.get("slackWebhookUrl") ?? "").trim() || null;
   const requireHumanApproval = fd.get("requireHumanApproval") === "true";
+  const autoConcludeEnabled = fd.get("autoConcludeEnabled") === "true";
   const guardrailsRaw = String(fd.get("brandGuardrails") ?? "").trim();
 
   let brandGuardrails = null;
@@ -80,7 +81,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     await prisma.shop.update({
       where: { id: shop.id },
-      data: { slackWebhookUrl, requireHumanApproval, brandGuardrails },
+      data: { slackWebhookUrl, requireHumanApproval, autoConcludeEnabled, brandGuardrails },
     });
     return { success: true };
   } catch (error) {
@@ -157,7 +158,17 @@ export default function Settings() {
             label="Require human approval before launching experiments"
             value="true"
             checked={shop.requireHumanApproval}
-            details="Phase 3 feature — set this now to be ready when approval workflows launch"
+            details="When on, AI-built variants wait for your approval before going live."
+          />
+        </s-section>
+
+        <s-section heading="Concluding tests">
+          <s-switch
+            name="autoConcludeEnabled"
+            label="Let the AI automatically conclude tests when a winner is found"
+            value="true"
+            checked={shop.autoConcludeEnabled}
+            details="When on, a test ends automatically once it reaches 95% statistical confidence (after the minimum runtime). When off, you decide when to pause or end each test yourself. Either way, a test that drops average order value past the guardrail is always stopped automatically to prevent revenue loss."
           />
         </s-section>
 

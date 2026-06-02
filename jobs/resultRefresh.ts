@@ -21,7 +21,11 @@ const AOV_GUARDRAIL_THRESHOLD = 0.03;
 export async function processResultRefresh(experimentId: string) {
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
-    include: { variants: true, segment: { select: { deviceType: true } } },
+    include: {
+      variants: true,
+      segment: { select: { deviceType: true } },
+      shop: { select: { autoConcludeEnabled: true } },
+    },
   });
 
   if (!experiment || experiment.status === "concluded") return;
@@ -41,19 +45,19 @@ export async function processResultRefresh(experimentId: string) {
   const [viewCounts, conversionCounts, revenueRows] = await Promise.all([
     prisma.$queryRaw<CountRow[]>`
       SELECT "variantId" AS variantid, COUNT(DISTINCT "visitorId") AS cnt
-      FROM "Event"
+      FROM "events"
       WHERE "experimentId" = ${experimentId} AND "eventType" = 'view'
       GROUP BY "variantId"
     `,
     prisma.$queryRaw<CountRow[]>`
       SELECT "variantId" AS variantid, COUNT(DISTINCT "visitorId") AS cnt
-      FROM "Event"
+      FROM "events"
       WHERE "experimentId" = ${experimentId} AND "eventType" = ${conversionEventType}
       GROUP BY "variantId"
     `,
     prisma.$queryRaw<{ variantid: string; total: string | null }[]>`
       SELECT "variantId" AS variantid, SUM("revenue") AS total
-      FROM "Event"
+      FROM "events"
       WHERE "experimentId" = ${experimentId} AND "eventType" = 'purchase'
       GROUP BY "variantId"
     `,
@@ -168,9 +172,15 @@ export async function processResultRefresh(experimentId: string) {
     ? (Date.now() - experiment.startedAt.getTime()) / (1000 * 60 * 60 * 24)
     : 0;
   const metMinRuntime = daysSinceStart >= experiment.minRuntimeDays;
+  // The AOV guardrail always auto-concludes (loss prevention). The Bayesian
+  // "winner found" auto-conclude only fires when the merchant has left
+  // autoConcludeEnabled on; if they've chosen to decide themselves, we still
+  // compute + store significance but never end the test for them.
+  const autoConclude = experiment.shop?.autoConcludeEnabled ?? true;
+  const bayesianWin =
+    metMinRuntime && stats.probToBeatControl !== null && stats.probToBeatControl >= 0.95;
   const shouldConclude =
-    experiment.status === "active" &&
-    (aovTripped || (metMinRuntime && stats.probToBeatControl !== null && stats.probToBeatControl >= 0.95));
+    experiment.status === "active" && (aovTripped || (autoConclude && bayesianWin));
 
   if (shouldConclude) {
     const reason = aovTripped ? "AOV guardrail tripped" : "Bayesian 95% threshold reached";

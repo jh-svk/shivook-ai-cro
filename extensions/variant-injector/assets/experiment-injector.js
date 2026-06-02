@@ -5,6 +5,7 @@
   var LS_VISITOR    = 'cro_visitor_id';
   var LS_ASSIGN_PFX = 'cro_assign_';
   var LS_VID_PFX    = 'cro_vid_';
+  var LS_ENROLLED   = 'cro_enrolled_experiment'; // the ONE test this visitor is in
   var SS_SESSION    = 'cro_session_id';
 
   // ── Stable 32-bit FNV-1a hash ──────────────────────────────────────────────
@@ -135,6 +136,48 @@
     return type;
   }
 
+  // ── Visibility helper ────────────────────────────────────────────────────────
+  // Many themes (e.g. Dawn) render a HIDDEN duplicate of an element — the cart
+  // DRAWER contains the same `.cart__checkout-button` as the visible cart page.
+  // A naive querySelector returns the first match, which is often the hidden one,
+  // so a variant injects into an invisible container and "does nothing".
+  function croVisible(el) {
+    if (!el) return false;
+    if (typeof el.checkVisibility === 'function') {
+      try { return el.checkVisibility({ visibilityProperty: true, contentVisibilityAuto: true }); } catch (_) {}
+    }
+    var rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    var node = el;
+    while (node && node.nodeType === 1) {
+      var cs;
+      try { cs = getComputedStyle(node); } catch (_) { return true; }
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      node = node.parentElement;
+    }
+    return true;
+  }
+
+  // Run `fn` with document.querySelector temporarily preferring a VISIBLE match
+  // (falling back to the first match if none are visible). Scoped to the variant's
+  // synchronous execution, then restored — the theme's own code is unaffected.
+  function withVisiblePreferredQuery(fn) {
+    var nativeQS = document.querySelector;
+    var nativeQSA = document.querySelectorAll.bind(document);
+    document.querySelector = function (sel) {
+      try {
+        var matches = nativeQSA(sel);
+        for (var i = 0; i < matches.length; i++) {
+          if (croVisible(matches[i])) return matches[i];
+        }
+        return matches.length ? matches[0] : null;
+      } catch (_) {
+        try { return nativeQS.call(document, sel); } catch (_2) { return null; }
+      }
+    };
+    try { fn(); } finally { document.querySelector = nativeQS; }
+  }
+
   // ── DOM patching ────────────────────────────────────────────────────────────
   function applyPatch(htmlPatch, cssPatch, jsPatch) {
     if (cssPatch) {
@@ -160,8 +203,16 @@
 
     if (jsPatch) {
       try {
+        // Some generated variants wrap their JS in <script>…</script>. new Function
+        // expects raw JS, so a wrapped patch is a syntax error and the variant
+        // silently does nothing. Strip any <script> wrapper before executing.
+        var code = jsPatch;
+        if (/<script[\s>]/i.test(code)) {
+          var inner = code.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, '');
+          code = inner.trim();
+        }
         // eslint-disable-next-line no-new-func
-        (new Function(jsPatch))();
+        withVisiblePreferredQuery(function () { (new Function(code))(); });
       } catch (_) {}
     }
   }
@@ -182,6 +233,44 @@
       body: body,
       keepalive: true,
     }).catch(function () {});
+  }
+
+  // ── Draggable helper (preview banner) ────────────────────────────────────────
+  function makeDraggable(el) {
+    var dragging = false, startX = 0, startY = 0, originLeft = 0, originTop = 0;
+    function pointerDown(e) {
+      dragging = true;
+      var pt = e.touches ? e.touches[0] : e;
+      var rect = el.getBoundingClientRect();
+      // Switch from bottom/right anchoring to absolute top/left at current spot.
+      el.style.left = rect.left + 'px';
+      el.style.top = rect.top + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+      originLeft = rect.left; originTop = rect.top;
+      startX = pt.clientX; startY = pt.clientY;
+      el.style.cursor = 'grabbing';
+      e.preventDefault();
+    }
+    function pointerMove(e) {
+      if (!dragging) return;
+      var pt = e.touches ? e.touches[0] : e;
+      var nx = originLeft + (pt.clientX - startX);
+      var ny = originTop + (pt.clientY - startY);
+      // Keep it on-screen.
+      nx = Math.max(0, Math.min(nx, window.innerWidth - el.offsetWidth));
+      ny = Math.max(0, Math.min(ny, window.innerHeight - el.offsetHeight));
+      el.style.left = nx + 'px';
+      el.style.top = ny + 'px';
+      e.preventDefault();
+    }
+    function pointerUp() { dragging = false; el.style.cursor = 'grab'; }
+    el.addEventListener('mousedown', pointerDown);
+    document.addEventListener('mousemove', pointerMove);
+    document.addEventListener('mouseup', pointerUp);
+    el.addEventListener('touchstart', pointerDown, { passive: false });
+    document.addEventListener('touchmove', pointerMove, { passive: false });
+    document.addEventListener('touchend', pointerUp);
   }
 
   // ── Preview mode ─────────────────────────────────────────────────────────────
@@ -214,16 +303,22 @@
 
           applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
 
-          // Preview banner
+          // Preview banner — draggable so it never blocks the variant being QA'd.
           var banner = document.createElement('div');
           banner.id = 'cro-preview-banner';
           banner.style.cssText = [
-            'position:fixed', 'bottom:16px', 'right:16px', 'z-index:999999',
+            'position:fixed', 'bottom:16px', 'right:16px', 'z-index:2147483647',
             'background:#000', 'color:#fff', 'font-size:12px', 'padding:8px 12px',
-            'border-radius:6px', 'font-family:sans-serif', 'opacity:0.85',
-            'pointer-events:none',
+            'border-radius:6px', 'font-family:sans-serif', 'opacity:0.9',
+            'cursor:grab', 'user-select:none', '-webkit-user-select:none',
+            'box-shadow:0 2px 8px rgba(0,0,0,0.3)', 'touch-action:none',
+            'display:flex', 'align-items:center', 'gap:6px',
           ].join(';');
-          banner.textContent = 'CRO Preview — ' + (variant.type || 'variant') + ' variant';
+          banner.innerHTML =
+            '<span style="opacity:0.6;font-size:13px;line-height:1">☰</span>' +
+            '<span>CRO Preview — ' + (variant.type || 'variant') + ' variant</span>';
+          banner.title = 'Drag to move';
+          makeDraggable(banner);
           document.body.appendChild(banner);
           break;
         }
@@ -256,29 +351,58 @@
       .then(function (data) {
       if (!data || !Array.isArray(data.experiments)) return;
 
-      data.experiments.forEach(function (exp) {
-        // Skip experiments this visitor doesn't match
-        if (!matchesSegment(exp.segment, ctx)) return;
+      var pageExps  = data.experiments;                                   // current page, with variants
+      var allActive = Array.isArray(data.allActive) ? data.allActive : null;
 
-        var variantType = assignVariant(rawVisitorId, exp.id);
+      // Mutual exclusion: a visitor is enrolled in AT MOST ONE experiment they
+      // match (by segment), and stays in it for its lifetime. Two experiments
+      // only "overlap" when a single visitor matches both — so this guarantees
+      // no visitor is ever exposed to two interacting tests, while different
+      // visitors still populate different tests based on their segment.
 
-        var variant = null;
-        for (var i = 0; i < exp.variants.length; i++) {
-          if (exp.variants[i].type === variantType) { variant = exp.variants[i]; break; }
+      // Release the visitor if their enrolled test is no longer active.
+      var enrolledId = lsGet(LS_ENROLLED) || null;
+      if (enrolledId && allActive) {
+        var stillActive = false;
+        for (var a = 0; a < allActive.length; a++) {
+          if (allActive[a].id === enrolledId) { stillActive = true; break; }
         }
-        if (!variant) return;
+        if (!stillActive) { enrolledId = null; lsSet(LS_ENROLLED, ''); }
+      }
 
-        lsSet(LS_VID_PFX + exp.id, variant.id);
+      var exp = null;
+      if (enrolledId) {
+        // Already committed — only act if the enrolled test lives on this page.
+        for (var i = 0; i < pageExps.length; i++) {
+          if (pageExps[i].id === enrolledId) { exp = pageExps[i]; break; }
+        }
+      } else {
+        // Not yet enrolled — commit to ONE matched test on this page (the
+        // choice is deterministic per visitor, so it's stable + evenly split).
+        var matchedHere = pageExps.filter(function (e) { return matchesSegment(e.segment, ctx); });
+        if (matchedHere.length > 0) {
+          matchedHere.sort(function (x, y) { return x.id < y.id ? -1 : x.id > y.id ? 1 : 0; });
+          exp = matchedHere[fnv32a(rawVisitorId + '|cro_enroll') % matchedHere.length];
+          lsSet(LS_ENROLLED, exp.id);
+        }
+      }
+      if (!exp) return; // committed to a test on another page, or no match here
 
-        applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+      var variantType = assignVariant(rawVisitorId, exp.id);
+      var variant = null;
+      for (var j = 0; j < exp.variants.length; j++) {
+        if (exp.variants[j].type === variantType) { variant = exp.variants[j]; break; }
+      }
+      if (!variant) return;
 
-        fireViewEvent({
-          experimentId: exp.id,
-          variantId:    variant.id,
-          visitorId:    visitorId,
-          sessionId:    sessionId,
-          eventType:    'view',
-        });
+      lsSet(LS_VID_PFX + exp.id, variant.id);
+      applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+      fireViewEvent({
+        experimentId: exp.id,
+        variantId:    variant.id,
+        visitorId:    visitorId,
+        sessionId:    sessionId,
+        eventType:    'view',
       });
       });
   }).catch(function () {

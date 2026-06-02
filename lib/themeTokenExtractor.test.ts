@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractCssVarsFromHtml, extractComponentHtml } from "./themeTokenExtractor.server";
+import { extractCssVarsFromHtml, extractComponentHtml, isUsableCssVarValue } from "./themeTokenExtractor.server";
 
 const SAMPLE_HTML = `
 <html>
@@ -47,6 +47,43 @@ describe("extractCssVarsFromHtml", () => {
     const html = `<style>:root { --color-button: #first; } :root { --color-button: #second; }</style>`;
     const vars = extractCssVarsFromHtml(html);
     expect(vars["--color-button"]).toBe("#second");
+  });
+
+  it("drops malformed bare-unit values from empty theme settings", () => {
+    // e.g. `--media-padding: {{ settings.padding }}px;` with an empty setting
+    const html = `<style>:root { --media-padding: px; --inputs-radius: 2px; --x: rem; }</style>`;
+    const vars = extractCssVarsFromHtml(html);
+    expect(vars["--media-padding"]).toBeUndefined();
+    expect(vars["--x"]).toBeUndefined();
+    expect(vars["--inputs-radius"]).toBe("2px"); // real value kept
+  });
+
+  it("keeps legitimate RGB-triplet and scale values", () => {
+    const html = `<style>:root { --color-base-text: 0, 0, 0; --font-body-scale: 1.0; --page-width: 160rem; }</style>`;
+    const vars = extractCssVarsFromHtml(html);
+    expect(vars["--color-base-text"]).toBe("0, 0, 0");
+    expect(vars["--font-body-scale"]).toBe("1.0");
+    expect(vars["--page-width"]).toBe("160rem");
+  });
+  // Note: un-rendered Liquid (`{{ }}` / `{% %}`) drop is covered directly in the
+  // isUsableCssVarValue suite below — it can't be tested via the :root block
+  // matcher because Liquid braces break the `[^}]+` block-capture regex.
+});
+
+describe("isUsableCssVarValue", () => {
+  it("rejects empty, bare-unit, and Liquid values", () => {
+    expect(isUsableCssVarValue("")).toBe(false);
+    expect(isUsableCssVarValue("  ")).toBe(false);
+    expect(isUsableCssVarValue("px")).toBe(false);
+    expect(isUsableCssVarValue("REM")).toBe(false);
+    expect(isUsableCssVarValue("{{ x }}")).toBe(false);
+  });
+
+  it("accepts real values", () => {
+    expect(isUsableCssVarValue("4px")).toBe(true);
+    expect(isUsableCssVarValue("0, 0, 0")).toBe(true);
+    expect(isUsableCssVarValue("#1a1a1a")).toBe(true);
+    expect(isUsableCssVarValue("'Helvetica Neue', sans-serif")).toBe(true);
   });
 });
 

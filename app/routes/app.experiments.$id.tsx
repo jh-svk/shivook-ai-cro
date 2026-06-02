@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { canActivateExperiment } from "../../lib/concurrentTestManager.server";
+import { formatStatus, humanizeMetric, humanizeMetricsInText, titleCase } from "../../lib/formatText";
 
 type BadgeTone = "info" | "success" | "warning" | "neutral" | "critical";
 
@@ -42,7 +43,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
     const shop = await prisma.shop.findUnique({
       where: { shopifyDomain: session.shop },
-      select: { id: true, shopifyDomain: true },
+      select: { id: true, shopifyDomain: true, themeTokens: true },
     });
     if (!shop) throw new Response("Shop not found", { status: 404 });
 
@@ -52,6 +53,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     });
     if (!experiment) throw new Response("Not Found", { status: 404 });
 
+    // Preview should open on a page where the test actually runs, not the homepage.
+    const sampleUrls = (shop.themeTokens as { sampleUrls?: { product?: string | null; collection?: string | null } } | null)?.sampleUrls;
+    const previewPath =
+      experiment.pageType === "product" ? sampleUrls?.product ?? "/"
+      : experiment.pageType === "collection" ? sampleUrls?.collection ?? "/"
+      : experiment.pageType === "cart" ? "/cart"
+      : "/";
+
     // Load QA log for pending_approval experiments
     const qaLog = experiment.status === "pending_approval"
       ? await prisma.orchestratorLog.findFirst({
@@ -60,7 +69,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         })
       : null;
 
-    return { experiment, qaLog, shopDomain: shop.shopifyDomain };
+    return { experiment, qaLog, shopDomain: shop.shopifyDomain, previewPath };
   } catch (error) {
     if (error instanceof Response) throw error;
     console.error("[experiments.$id] loader error", error);
@@ -87,12 +96,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       select: { status: true },
     });
     if (!experiment) return { error: "Experiment not found." };
-    if (experiment.status === "active") {
-      return { error: "End the test before deleting it." };
-    }
     try {
+      // Remove every row that references this experiment before deleting it,
+      // otherwise foreign-key constraints block the delete (this is why
+      // concluded experiments — which have a knowledge-base entry — failed).
+      await prisma.hypothesis.updateMany({
+        where: { promotedExperimentId: params.id },
+        data: { promotedExperimentId: null },
+      });
       await prisma.event.deleteMany({ where: { experimentId: params.id } });
       await prisma.result.deleteMany({ where: { experimentId: params.id } });
+      await prisma.knowledgeBase.deleteMany({ where: { experimentId: params.id } });
       try {
         await prisma.orchestratorLog.deleteMany({
           where: { payload: { path: ["experimentId"], equals: params.id } },
@@ -124,6 +138,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "approve") {
+    const check = await canActivateExperiment(params.id!);
+    if (!check.allowed) return { error: check.reason ?? "Cannot activate experiment." };
     try {
       await prisma.experiment.update({
         where: { id: params.id, shopId },
@@ -138,12 +154,21 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   if (intent === "reject_approval") {
     try {
-      await prisma.experiment.update({
-        where: { id: params.id, shopId },
-        data: { status: "draft" },
+      // Mark the source hypothesis qa_failed (so it shows under "Build failed"
+      // with a Retry option) and delete the orphaned experiment — mirrors the
+      // qaReview reject cleanup, so no stale "promoted" hypothesis or ghost draft
+      // is left behind.
+      await prisma.hypothesis.updateMany({
+        where: { promotedExperimentId: params.id, shopId },
+        data: { status: "qa_failed", promotedExperimentId: null },
       });
-      return { success: true };
+      await prisma.event.deleteMany({ where: { experimentId: params.id } });
+      await prisma.result.deleteMany({ where: { experimentId: params.id } });
+      await prisma.variant.deleteMany({ where: { experimentId: params.id } });
+      await prisma.experiment.delete({ where: { id: params.id, shopId } });
+      throw redirect("/app");
     } catch (error) {
+      if (error instanceof Response) throw error;
       console.error("[experiments.$id] reject_approval error", error);
       return { error: "Failed to reject experiment." };
     }
@@ -157,6 +182,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const transition = transitions[intent];
   if (!transition) return { error: "Invalid action." };
+
+  // Resuming re-activates — enforce the same segment-collision + limit checks.
+  if (intent === "resume") {
+    const check = await canActivateExperiment(params.id!);
+    if (!check.allowed) return { error: check.reason ?? "Cannot resume experiment." };
+  }
 
   try {
     await prisma.experiment.update({
@@ -224,7 +255,7 @@ function CodePreview({ label, code }: { label: string; code: string }) {
 }
 
 export default function ExperimentDetail() {
-  const { experiment, qaLog, shopDomain } = useLoaderData<typeof loader>();
+  const { experiment, qaLog, shopDomain, previewPath } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -251,10 +282,10 @@ export default function ExperimentDetail() {
         <s-stack direction="block" gap="base">
           <s-stack direction="inline" gap="base">
             <s-badge tone={STATUS_TONE[experiment.status] ?? "info"}>
-              {experiment.status}
+              {formatStatus(experiment.status)}
             </s-badge>
           </s-stack>
-          <s-paragraph>{experiment.hypothesis}</s-paragraph>
+          <s-paragraph>{humanizeMetricsInText(experiment.hypothesis)}</s-paragraph>
           {actions.length > 0 && (
             <s-stack direction="inline" gap="base">
               {actions.map((a) => (
@@ -517,7 +548,7 @@ export default function ExperimentDetail() {
                       <s-button
                         type="button"
                         variant="secondary"
-                        href={`https://${shopDomain}/?cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
+                        href={`https://${shopDomain}${previewPath}${previewPath.includes("?") ? "&" : "?"}cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
                         target="_blank"
                       >
                         Preview on storefront ↗
@@ -579,15 +610,35 @@ export default function ExperimentDetail() {
         <s-stack direction="block" gap="base">
           <s-paragraph>
             <s-text>Page type: </s-text>
-            {experiment.pageType}
+            {titleCase(experiment.pageType)}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Device: </s-text>
+            {experiment.segment?.deviceType
+              ? titleCase(experiment.segment.deviceType)
+              : "All"}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Audience: </s-text>
+            {experiment.segment?.visitorType
+              ? titleCase(experiment.segment.visitorType) + " visitors"
+              : experiment.segment?.trafficSource
+              ? titleCase(experiment.segment.trafficSource) + " traffic"
+              : "All"}
+          </s-paragraph>
+          <s-paragraph>
+            <s-text>Geo: </s-text>
+            {experiment.segment?.geoCountry && experiment.segment.geoCountry.length > 0
+              ? experiment.segment.geoCountry.join(", ")
+              : "All"}
           </s-paragraph>
           <s-paragraph>
             <s-text>Element: </s-text>
-            {experiment.elementType}
+            {titleCase(experiment.elementType)}
           </s-paragraph>
           <s-paragraph>
             <s-text>Target metric: </s-text>
-            {experiment.targetMetric.replace(/_/g, " ")}
+            {titleCase(humanizeMetric(experiment.targetMetric))}
           </s-paragraph>
           <s-paragraph>
             <s-text>Traffic split: </s-text>
@@ -607,12 +658,6 @@ export default function ExperimentDetail() {
             <s-paragraph>
               <s-text>Concluded: </s-text>
               {new Date(experiment.concludedAt).toLocaleDateString()}
-            </s-paragraph>
-          )}
-          {experiment.segment && (
-            <s-paragraph>
-              <s-text>Segment: </s-text>
-              {experiment.segment.name}
             </s-paragraph>
           )}
         </s-stack>
