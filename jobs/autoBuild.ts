@@ -14,6 +14,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { hasPlanFeature } from "../lib/planGate.server";
 import { fetchStorefrontHtml } from "../lib/themeTokenExtractor.server";
 import { validateVariantAgainstHtml } from "../lib/variantValidator.server";
+import { validateVariantVisually } from "../lib/visualValidator.server";
 
 interface ThemeTokensShape {
   cssVars?: Record<string, string>;
@@ -804,6 +805,38 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
   patches.htmlPatch = deDash(patches.htmlPatch ?? null);
   patches.jsPatch = deDash(patches.jsPatch ?? null);
   patches.variantDescription = deDash(patches.variantDescription) ?? patches.variantDescription;
+
+  // ── Visual (geometry) validation — catches LAYOUT breakage the linkedom render
+  // check can't (squeezed flex rows, overflow). Gated behind VISUAL_VALIDATION=on
+  // and fail-open: a validator/infra error never blocks the build.
+  if (process.env.VISUAL_VALIDATION === "on") {
+    try {
+      const vTokens = hypothesis.shop.themeTokens as ThemeTokensShape | null;
+      const vSample = vTokens?.sampleUrls;
+      const vPath =
+        hypothesis.pageType === "product" ? vSample?.product ?? "/"
+        : hypothesis.pageType === "collection" ? vSample?.collection ?? "/"
+        : hypothesis.pageType === "cart" ? "/cart"
+        : "/";
+      const visual = await validateVariantVisually({
+        pageUrl: `https://${hypothesis.shop.shopifyDomain}${vPath}`,
+        htmlPatch: patches.htmlPatch ?? null,
+        cssPatch: patches.cssPatch ?? null,
+        jsPatch: patches.jsPatch ?? null,
+        deviceType: recSeg?.deviceType ?? null,
+        storefrontPassword: process.env.STOREFRONT_PASSWORD ?? null,
+      });
+      if (!visual.ok) {
+        await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
+        await logOrchestrator(shopId, runId, "VISUAL_CHECK", "failed", { hypothesisId, reason: visual.reason, detail: visual.detail });
+        console.log(`[autoBuild] visual validation failed for ${hypothesisId}: ${visual.detail}`);
+        return;
+      }
+      if (visual.skipped) console.log(`[autoBuild] visual validation skipped (${visual.reason}) for ${hypothesisId}`);
+    } catch (err) {
+      console.warn(`[autoBuild] visual validation errored (skipping) for ${hypothesisId}:`, err);
+    }
+  }
 
   const { htmlPatch, cssPatch, jsPatch, variantDescription } = patches;
 
