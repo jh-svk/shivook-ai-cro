@@ -46,6 +46,13 @@ describe("validateVariantAgainstHtml", () => {
     expect(validateVariantAgainstHtml({ htmlPatch: '<div class="cro">Sale</div>', cssPatch: null, jsPatch: null, pageType: "product", pageHtml: PRODUCT_HTML }).ok).toBe(true);
   });
 
+  it("validates a desktop-gated variant at desktop width (no false-fail)", () => {
+    const desktopJs = `(function(){ if(window.innerWidth < 990) return; var h=document.querySelector('.product__title'); if(!h) return; var bar=document.createElement('div'); bar.id='cro-bar'; bar.textContent='Trust'; h.parentNode.appendChild(bar); })();`;
+    // As mobile → bails (no change). As desktop → runs and changes the page.
+    expect(validateVariantAgainstHtml({ htmlPatch: null, cssPatch: null, jsPatch: desktopJs, pageType: "product", deviceType: "mobile", pageHtml: PRODUCT_HTML }).ok).toBe(false);
+    expect(validateVariantAgainstHtml({ htmlPatch: null, cssPatch: null, jsPatch: desktopJs, pageType: "product", deviceType: "desktop", pageHtml: PRODUCT_HTML }).ok).toBe(true);
+  });
+
   it("fails a completely empty variant", () => {
     const r = validateVariantAgainstHtml({ htmlPatch: null, cssPatch: null, jsPatch: null, pageType: "product", pageHtml: PRODUCT_HTML });
     expect(r.ok).toBe(false);

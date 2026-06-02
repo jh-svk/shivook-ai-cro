@@ -160,6 +160,9 @@ OTHER PLATFORM GUARDRAILS:
 - Experiments must target product pages, collection pages, cart page, or homepage only
 - Keep JS patches under 10kb — suggest lightweight DOM changes, not full component rewrites
 
+Do NOT use em-dashes (—) or en-dashes (–) anywhere in the title or hypothesis text —
+they read as AI-generated. Use a period, comma, or colon instead.
+
 Write metric names in plain English in the hypothesis prose (e.g. "add-to-cart rate", not
 "add_to_cart_rate").`;
 

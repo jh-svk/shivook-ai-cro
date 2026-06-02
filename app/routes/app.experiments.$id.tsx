@@ -138,6 +138,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "approve") {
+    const check = await canActivateExperiment(params.id!);
+    if (!check.allowed) return { error: check.reason ?? "Cannot activate experiment." };
     try {
       await prisma.experiment.update({
         where: { id: params.id, shopId },
@@ -171,6 +173,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const transition = transitions[intent];
   if (!transition) return { error: "Invalid action." };
+
+  // Resuming re-activates — enforce the same segment-collision + limit checks.
+  if (intent === "resume") {
+    const check = await canActivateExperiment(params.id!);
+    if (!check.allowed) return { error: check.reason ?? "Cannot resume experiment." };
+  }
 
   try {
     await prisma.experiment.update({

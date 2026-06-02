@@ -366,7 +366,7 @@ export default function ExperimentsIndex() {
                         {formatStatus(exp.status)}
                       </s-badge>
                     </s-table-cell>
-                    <s-table-cell>{exp.pageType}</s-table-cell>
+                    <s-table-cell>{titleCase(exp.pageType)}</s-table-cell>
                     <s-table-cell>
                       {exp.segment?.deviceType ? titleCase(exp.segment.deviceType) : "All"}
                     </s-table-cell>

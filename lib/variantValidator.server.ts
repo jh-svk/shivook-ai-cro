@@ -33,6 +33,7 @@ interface ValidatorInput {
   jsPatch: string | null;
   pageType: string;
   pageHtml: string; // the real target page's HTML
+  deviceType?: string | null; // "mobile" | "desktop" | "tablet" — sets the shimmed width
 }
 
 /**
@@ -66,8 +67,11 @@ export function validateVariantAgainstHtml(input: ValidatorInput): VariantValida
   const snapshot = () => (document.body ? document.body.innerHTML : document.toString());
   const beforeHtml = snapshot();
 
-  // Minimal shims so layout-dependent variant JS runs its MAIN path.
-  shimWindow(win);
+  // Minimal shims so layout-dependent variant JS runs its MAIN path. Use a width
+  // matching the variant's TARGET device, so a desktop variant gated on
+  // `innerWidth >= 990` (or @media min-width) runs its main path instead of
+  // bailing out (which would be a false "no change").
+  shimWindow(win, input.deviceType);
 
   // Apply the HTML patch the way the injector does (append to body).
   if (htmlPatch) {
@@ -127,16 +131,24 @@ export function validateVariantAgainstHtml(input: ValidatorInput): VariantValida
 }
 
 /** Minimal shims so layout/scroll/matchMedia-gated variant JS runs its main path. */
-function shimWindow(win: ReturnType<typeof parseHTML>): void {
+function shimWindow(win: ReturnType<typeof parseHTML>, deviceType?: string | null): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = (win.window ?? win) as any;
-  // Force a mobile-ish width so `if (innerWidth >= 750) return` does NOT early-exit.
-  if (typeof w.innerWidth !== "number" || w.innerWidth === 0) w.innerWidth = 390;
-  if (typeof w.innerHeight !== "number" || w.innerHeight === 0) w.innerHeight = 844;
-  w.matchMedia = w.matchMedia || function (q: string) {
-    // Treat max-width mobile queries as matching.
-    const m = /max-width:\s*(\d+)/.exec(q);
-    const matches = m ? 390 <= parseInt(m[1], 10) : false;
+  // Use a width matching the variant's target device so device-gated JS
+  // (innerWidth checks, matchMedia) runs its MAIN path instead of bailing.
+  const isDesktop = deviceType === "desktop";
+  const width = isDesktop ? 1440 : 390;
+  const height = isDesktop ? 900 : 844;
+  w.innerWidth = width;
+  w.innerHeight = height;
+  w.matchMedia = function (q: string) {
+    // Evaluate min-width / max-width queries against our chosen width.
+    let matches = false;
+    const min = /min-width:\s*(\d+)/.exec(q);
+    const max = /max-width:\s*(\d+)/.exec(q);
+    if (min && max) matches = width >= parseInt(min[1], 10) && width <= parseInt(max[1], 10);
+    else if (min) matches = width >= parseInt(min[1], 10);
+    else if (max) matches = width <= parseInt(max[1], 10);
     return { matches, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} };
   };
   w.requestAnimationFrame = w.requestAnimationFrame || ((cb: (t: number) => void) => { try { cb(0); } catch { /* */ } return 0; });

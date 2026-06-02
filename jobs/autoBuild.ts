@@ -30,6 +30,38 @@ export interface AutoBuildJobData {
   hypothesisId: string;
 }
 
+/**
+ * Parse a JSON object that Claude may have emitted with RAW newlines/tabs inside
+ * string values (common with multi-line CSS/JS), which is invalid JSON. We first
+ * try strict parse; on failure, escape control characters that appear INSIDE
+ * double-quoted strings and retry. Throws if still unparseable.
+ */
+export function parsePatchesJson<T>(input: string): T {
+  try {
+    return JSON.parse(input) as T;
+  } catch {
+    let out = "";
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < input.length; i++) {
+      const c = input[i];
+      if (inStr) {
+        if (esc) { out += c; esc = false; continue; }
+        if (c === "\\") { out += c; esc = true; continue; }
+        if (c === '"') { out += c; inStr = false; continue; }
+        if (c === "\n") { out += "\\n"; continue; }
+        if (c === "\r") { out += "\\r"; continue; }
+        if (c === "\t") { out += "\\t"; continue; }
+        out += c;
+        continue;
+      }
+      if (c === '"') { inStr = true; out += c; continue; }
+      out += c;
+    }
+    return JSON.parse(out) as T;
+  }
+}
+
 export async function enqueueAutoBuild(shopId: string, hypothesisId: string): Promise<void> {
   const boss = await getBoss();
   await boss.createQueue(AUTO_BUILD_QUEUE);
@@ -56,6 +88,10 @@ Patches must not use external resources, must not contain synchronous scripts, a
 Respond ONLY with a valid JSON object — no markdown fences, no explanation.
 The JSON must have exactly these keys: htmlPatch, cssPatch, jsPatch, variantDescription.
 Each patch value is a string or null. variantDescription is a short string summarising the change.
+
+COPY STYLE: Any visible copy you write (headlines, labels, button text, body)
+must NOT use em-dashes (—) or en-dashes (–) — they read as AI-generated. Use a
+period, comma, or colon, or rephrase. Avoid the "X — Y" construction entirely.
 
 FRONT-END ONLY: your patch only changes the storefront DOM. You CANNOT change any
 Shopify backend setting. Never fabricate a claim that the checkout wouldn't actually
@@ -508,7 +544,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
   const jsonStr = raw.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
   let patches: { htmlPatch: string | null; cssPatch: string | null; jsPatch: string | null; variantDescription: string };
   try {
-    patches = JSON.parse(jsonStr);
+    patches = parsePatchesJson(jsonStr);
   } catch {
     await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
     await logOrchestrator(shopId, runId, "BUILD", "failed", {
@@ -564,7 +600,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     if (retryRaw.type === "text") {
       const retryJson = retryRaw.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
       try {
-        patches = JSON.parse(retryJson);
+        patches = parsePatchesJson(retryJson);
         extractInlineScripts(patches);
         selCheck = validateVariantSelectors(patches.jsPatch ?? null, patches.htmlPatch ?? null, selVocab);
       } catch {
@@ -623,7 +659,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
           .replace(/^```(?:json)?\n?/, "")
           .replace(/\n?```$/, "");
         try {
-          patches = JSON.parse(retryJsonStr);
+          patches = parsePatchesJson(retryJsonStr);
           extractInlineScripts(patches);
           critique = await designCritique(patches.htmlPatch ?? null, patches.cssPatch ?? null, patches.jsPatch ?? null, cssVars, client);
           if (!critique.passed) {
@@ -678,6 +714,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
       cssPatch: patches.cssPatch ?? null,
       jsPatch: patches.jsPatch ?? null,
       pageType: hypothesis.pageType,
+      deviceType: recSeg?.deviceType ?? null,
       pageHtml,
     });
 
@@ -705,7 +742,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
           extractInlineScripts(retried);
           const render2 = validateVariantAgainstHtml({
             htmlPatch: retried.htmlPatch ?? null, cssPatch: retried.cssPatch ?? null,
-            jsPatch: retried.jsPatch ?? null, pageType: hypothesis.pageType, pageHtml,
+            jsPatch: retried.jsPatch ?? null, pageType: hypothesis.pageType, deviceType: recSeg?.deviceType ?? null, pageHtml,
           });
           if (render2.ok) { patches = retried; render = render2; }
         } catch { /* keep original; render stays failed */ }
@@ -722,6 +759,15 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     // Never block a build on the validator infra itself failing.
     console.warn(`[autoBuild] render validation skipped for ${hypothesisId}:`, err);
   }
+
+  // Strip em/en-dashes from generated copy (a clear AI tell). Replace " — "
+  // with " - " and a bare em/en-dash with a comma-space, in HTML + JS string
+  // copy. CSS is left untouched (dashes there are syntactic, e.g. var names).
+  const deDash = (s: string | null): string | null =>
+    s == null ? s : s.replace(/\s+[—–]\s+/g, " - ").replace(/[—–]/g, ", ");
+  patches.htmlPatch = deDash(patches.htmlPatch ?? null);
+  patches.jsPatch = deDash(patches.jsPatch ?? null);
+  patches.variantDescription = deDash(patches.variantDescription) ?? patches.variantDescription;
 
   const { htmlPatch, cssPatch, jsPatch, variantDescription } = patches;
 
