@@ -133,6 +133,21 @@ ATTACH RELATIVE TO THE RIGHT ANCHOR, AND MATCH ITS WIDTH:
   (e.g. below "Buy it now"), so it doesn't wedge awkwardly between the two buttons.
 - Visually align your element's left and right edges with the buttons above it.
 
+NEVER INJECT INTO THE MIDDLE OF A FLEX/GRID ROW (this breaks the layout badly):
+- Many theme rows are horizontal flex/grid containers (e.g. the cart "Subtotal …
+  $price" row, a label-and-value row, a price row). If you insert a new block as a
+  SIBLING between two items in such a row, flex/grid will squeeze every item and
+  text will wrap into a vertical mess (e.g. "Subtotal" becoming "Sub / tota / l").
+- When you want to add a line "near the subtotal", "below the price", etc., insert
+  AFTER THE WHOLE ROW (as a sibling of the row container, not a sibling of an item
+  INSIDE the row), or append it inside a full-width block-level wrapper below the
+  row. Target the row's PARENT/wrapper, not the heading/value element itself.
+- Concretely: do NOT do parent.insertBefore(myEl, subtotalHeading.nextSibling)
+  when subtotalHeading sits in a flex row. Instead find the row container
+  (e.g. .totals, .cart__footer, the nearest block ancestor that spans full width)
+  and insert your element AFTER that container. Your added element should be
+  block-level and full-width, on its own line — never inline within a value row.
+
 DO NOT REBUILD COMPLEX INTERACTIVE WIDGETS:
 - Never clone, re-implement, or rebuild theme-driven interactive systems whose
   behaviour depends on the theme's own JavaScript — e.g. collection FILTER/FACET
