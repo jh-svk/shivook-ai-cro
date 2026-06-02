@@ -22,11 +22,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = await findOrCreateShop(session.shop, session.accessToken ?? "");
 
   try {
-    const [experiments, orchestratorLogs, buildingHypotheses] = await Promise.all([
+    const [experiments, orchestratorLogs, buildingHypotheses, shopRow] = await Promise.all([
       prisma.experiment.findMany({
         where: { shopId: shop.id },
         orderBy: { createdAt: "desc" },
-        include: { result: true, segment: true },
+        include: {
+          result: true,
+          segment: true,
+          variants: { select: { id: true, type: true } },
+        },
       }),
       prisma.orchestratorLog.findMany({
         where: { shopId: shop.id },
@@ -39,6 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         orderBy: { createdAt: "desc" },
         select: { id: true, title: true },
       }),
+      prisma.shop.findUnique({ where: { id: shop.id }, select: { shopifyDomain: true, themeTokens: true } }),
     ]);
     // Builds that failed quality checks — surfaced here so they're visible from
     // the Experiments page too, not only on the AI Hypotheses tab.
@@ -48,18 +53,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       take: 10,
       select: { id: true, title: true },
     });
-    return { experiments, orchestratorLogs, buildingHypotheses, failedBuilds };
+
+    // Build a direct storefront preview URL per experiment so the merchant can
+    // QA the treatment variant in a NEW TAB without opening the embedded admin
+    // detail page (which triggers a Shopify re-auth loop in a raw new tab).
+    const domain = shopRow?.shopifyDomain ?? "";
+    const sampleUrls = (shopRow?.themeTokens as { sampleUrls?: { product?: string | null; collection?: string | null } } | null)?.sampleUrls;
+    const pathFor = (pageType: string) =>
+      pageType === "product" ? sampleUrls?.product ?? "/"
+      : pageType === "collection" ? sampleUrls?.collection ?? "/"
+      : pageType === "cart" ? "/cart"
+      : "/";
+    const previewUrls: Record<string, string> = {};
+    for (const e of experiments) {
+      const treatment = e.variants.find((v) => v.type === "treatment");
+      if (domain && treatment) {
+        const path = pathFor(e.pageType);
+        previewUrls[e.id] = `https://${domain}${path}${path.includes("?") ? "&" : "?"}cro_preview_experiment=${e.id}&cro_preview_variant=${treatment.id}`;
+      }
+    }
+
+    return { experiments, orchestratorLogs, buildingHypotheses, failedBuilds, previewUrls };
   } catch (error) {
     console.error("[app._index] failed to load experiments", error);
     return {
       experiments: [] as Awaited<
         ReturnType<
-          typeof prisma.experiment.findMany<{ include: { result: true; segment: true } }>
+          typeof prisma.experiment.findMany<{ include: { result: true; segment: true; variants: { select: { id: true; type: true } } } }>
         >
       >,
       orchestratorLogs: [] as Awaited<ReturnType<typeof prisma.orchestratorLog.findMany>>,
       buildingHypotheses: [] as { id: string; title: string }[],
       failedBuilds: [] as { id: string; title: string }[],
+      previewUrls: {} as Record<string, string>,
     };
   }
 };
@@ -155,10 +181,47 @@ function relativeTime(date: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+function FilterChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "2px 10px",
+        borderRadius: 999,
+        border: "1px solid",
+        borderColor: active ? "#000" : "#d0d0d0",
+        background: active ? "#000" : "#fff",
+        color: active ? "#fff" : "#333",
+        fontSize: 12,
+        cursor: "pointer",
+        lineHeight: 1.8,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function ExperimentsIndex() {
-  const { experiments, orchestratorLogs, buildingHypotheses, failedBuilds } = useLoaderData<typeof loader>();
+  const { experiments, orchestratorLogs, buildingHypotheses, failedBuilds, previewUrls } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+
+  // Quick segment filter for the experiments table.
+  const [segFilter, setSegFilter] = useState<{ key: string; value: string } | null>(null);
+  const matchesFilter = (exp: (typeof experiments)[number]) => {
+    if (!segFilter) return true;
+    const seg = exp.segment;
+    if (segFilter.key === "pageType") return exp.pageType === segFilter.value;
+    if (segFilter.key === "device") return (seg?.deviceType ?? "") === segFilter.value;
+    if (segFilter.key === "audience") return (seg?.visitorType ?? "") === segFilter.value;
+    return true;
+  };
+  // Collect the distinct filter chips present across experiments.
+  const pageTypes = [...new Set(experiments.map((e) => e.pageType))].sort();
+  const devices = [...new Set(experiments.map((e) => e.segment?.deviceType).filter(Boolean) as string[])].sort();
+  const audiences = [...new Set(experiments.map((e) => e.segment?.visitorType).filter(Boolean) as string[])].sort();
 
   // Poll while variants are building so they appear in the list automatically.
   const revalidator = useRevalidator();
@@ -292,6 +355,21 @@ export default function ExperimentsIndex() {
         </s-section>
       ) : (
         <s-section>
+          {(pageTypes.length + devices.length + audiences.length) > 1 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 12 }}>
+              <s-text tone="neutral">Filter:</s-text>
+              <FilterChip label="All" active={!segFilter} onClick={() => setSegFilter(null)} />
+              {pageTypes.map((pt) => (
+                <FilterChip key={"p-" + pt} label={titleCase(pt)} active={segFilter?.key === "pageType" && segFilter.value === pt} onClick={() => setSegFilter({ key: "pageType", value: pt })} />
+              ))}
+              {devices.map((d) => (
+                <FilterChip key={"d-" + d} label={titleCase(d)} active={segFilter?.key === "device" && segFilter.value === d} onClick={() => setSegFilter({ key: "device", value: d })} />
+              ))}
+              {audiences.map((a) => (
+                <FilterChip key={"a-" + a} label={titleCase(a) + " visitors"} active={segFilter?.key === "audience" && segFilter.value === a} onClick={() => setSegFilter({ key: "audience", value: a })} />
+              ))}
+            </div>
+          )}
           {selected.size > 0 && (
             <Form
               method="post"
@@ -339,10 +417,11 @@ export default function ExperimentsIndex() {
               <s-table-header format="numeric">Control conv.</s-table-header>
               <s-table-header format="numeric">Treatment conv.</s-table-header>
               <s-table-header format="numeric">Lift</s-table-header>
+              <s-table-header>Preview</s-table-header>
               <s-table-header></s-table-header>
             </s-table-header-row>
             <s-table-body>
-              {experiments.map((exp) => {
+              {experiments.filter(matchesFilter).map((exp) => {
                 const isDeletable = true;
                 return (
                   <s-table-row key={exp.id}>
@@ -404,6 +483,20 @@ export default function ExperimentsIndex() {
                       {exp.result?.relativeLift != null
                         ? `${(exp.result.relativeLift * 100).toFixed(1)}%`
                         : "—"}
+                    </s-table-cell>
+                    <s-table-cell>
+                      {previewUrls[exp.id] ? (
+                        <a
+                          href={previewUrls[exp.id]}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ whiteSpace: "nowrap" }}
+                        >
+                          Preview ↗
+                        </a>
+                      ) : (
+                        "—"
+                      )}
                     </s-table-cell>
                     <s-table-cell>
                       {isDeletable && (
