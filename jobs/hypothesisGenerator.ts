@@ -179,12 +179,25 @@ function buildHypothesisPrompt(
   pastTests: string,
   avail: AvailableSegments,
   coveredCombos: string[],
+  pageStructure: string,
 ): string {
   return `## Research Report
 ${reportMd}
 
 ## Past Tests (avoid repeating these exactly)
 ${pastTests || "None yet."}
+
+## Real store structure (heuristic check — propose ONLY relevant, existing tests)
+Below is what ACTUALLY exists on this store's pages, scraped from the live theme.
+A hypothesis is only valid if the element it changes actually exists on that page type.
+${pageStructure}
+RELEVANCE RULES (do not skip):
+- Before proposing a test for a page type, confirm the element you'd change exists in that
+  page's structure above. Do NOT propose tests for elements that aren't there.
+- Example: collection/product-grid pages here typically have NO per-card "Add to cart"/CTA
+  buttons (they link to the product page). So do NOT propose "make the collection CTA bigger"
+  or "add-to-cart on collection cards" unless a button class is actually listed for collection.
+- Only propose a test when the target element is present AND changing it is a real front-end change.
 
 ## Segment targeting — MANDATORY
 Every hypothesis MUST target exactly ONE specific segment. A broad or null segment is NOT allowed —
@@ -224,11 +237,40 @@ Return a JSON array. Each object must have these exact keys:
 Return ONLY the JSON array, no other text.`;
 }
 
+/**
+ * Summarise the store's REAL page structure from the extracted theme tokens, so
+ * the generator only proposes tests for elements that actually exist (a heuristic
+ * relevance check). Falls back to a generic note if extraction hasn't run.
+ */
+function buildPageStructure(themeTokens: unknown): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const t = (themeTokens ?? {}) as any;
+  const real = t.realSelectors ?? {};
+  const headings: string[] = real.headings ?? [];
+  const buttons: string[] = real.buttons ?? [];
+  const classes: string[] = t.domVocabulary?.classes ?? [];
+  const captured: string[] = t.capturedPages ?? [];
+  if (!headings.length && !buttons.length && !classes.length) {
+    return "(No live structure captured yet — be conservative and only propose widely-applicable, clearly-present elements like the main heading, primary CTA, and existing copy.)\n";
+  }
+  // Heuristic flags the AI can reason from.
+  const hasCollectionCard = classes.some((c) => /card|product-card|grid__item/i.test(c));
+  const hasCardButton = buttons.some((b) => /card|quick-add|product-card/i.test(b));
+  return [
+    `Pages captured: ${captured.join(", ") || "homepage"}`,
+    `Real heading selectors present: ${JSON.stringify(headings.slice(0, 12))}`,
+    `Real button/CTA selectors present: ${JSON.stringify(buttons.slice(0, 12))}`,
+    `Collection/grid product cards present: ${hasCollectionCard ? "yes" : "no"}; per-card buttons present: ${hasCardButton ? "yes" : "NO (cards link to the product page; there are no add-to-cart/CTA buttons on collection cards)"}`,
+    "",
+  ].join("\n");
+}
+
 async function generateHypotheses(
   shopId: string,
   reportId: string,
   avail: AvailableSegments,
   coveredCombos: string[],
+  pageStructure: string,
 ): Promise<RawHypothesis[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
@@ -248,7 +290,7 @@ async function generateHypotheses(
     .join("\n");
 
   const platformInsights = await fetchPlatformInsights();
-  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests, avail, coveredCombos) +
+  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests, avail, coveredCombos, pageStructure) +
     (platformInsights
       ? `\n\n${platformInsights}\n\nWhen scoring ICE, use these platform patterns to calibrate Confidence scores. High-performing patterns on the platform should get higher Confidence. Consistent losers should get lower Confidence even if they seem logical locally.`
       : "");
@@ -336,7 +378,7 @@ export async function runHypothesisGenerator(shopId: string, reportId: string) {
   // segment that already has a running test would risk simultaneous testing on
   // the same audience — so we exclude those combos too.
   const [shopRow, existing, liveExperiments] = await Promise.all([
-    prisma.shop.findUnique({ where: { id: shopId }, select: { dataSnapshot: true } }),
+    prisma.shop.findUnique({ where: { id: shopId }, select: { dataSnapshot: true, themeTokens: true } }),
     prisma.hypothesis.findMany({
       where: { shopId, status: { in: ["backlog", "building", "promoted"] } },
       select: { pageType: true, recommendedSegment: true },
@@ -347,6 +389,7 @@ export async function runHypothesisGenerator(shopId: string, reportId: string) {
     }),
   ]);
   const avail = buildAvailableSegments(shopRow?.dataSnapshot);
+  const pageStructure = buildPageStructure(shopRow?.themeTokens);
 
   // Normalise both sources into the same (pageType, segment) shape.
   const hypoEntries = existing.map((e) => ({
@@ -369,7 +412,7 @@ export async function runHypothesisGenerator(shopId: string, reportId: string) {
   const covered = new Set(allEntries.map((e) => segmentSignature(e.pageType, e.seg)));
   const coveredCombos = [...new Set(allEntries.map((e) => comboLabel(e.pageType, e.seg)))];
 
-  const hypotheses = await generateHypotheses(shopId, reportId, avail, coveredCombos);
+  const hypotheses = await generateHypotheses(shopId, reportId, avail, coveredCombos, pageStructure);
 
   const seen = new Set<string>();
   let droppedDuplicate = 0;

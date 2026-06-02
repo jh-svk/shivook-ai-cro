@@ -64,13 +64,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : pageType === "collection" ? sampleUrls?.collection ?? "/"
       : pageType === "cart" ? "/cart"
       : "/";
-    const previewUrls: Record<string, string> = {};
+    const previewUrls: Record<string, { control?: string; treatment?: string }> = {};
     for (const e of experiments) {
+      if (!domain) continue;
+      const path = pathFor(e.pageType);
+      const base = `https://${domain}${path}${path.includes("?") ? "&" : "?"}cro_preview_experiment=${e.id}&cro_preview_variant=`;
+      const control = e.variants.find((v) => v.type === "control");
       const treatment = e.variants.find((v) => v.type === "treatment");
-      if (domain && treatment) {
-        const path = pathFor(e.pageType);
-        previewUrls[e.id] = `https://${domain}${path}${path.includes("?") ? "&" : "?"}cro_preview_experiment=${e.id}&cro_preview_variant=${treatment.id}`;
-      }
+      previewUrls[e.id] = {
+        control: control ? base + control.id : undefined,
+        treatment: treatment ? base + treatment.id : undefined,
+      };
     }
 
     return { experiments, orchestratorLogs, buildingHypotheses, failedBuilds, previewUrls };
@@ -85,7 +89,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       orchestratorLogs: [] as Awaited<ReturnType<typeof prisma.orchestratorLog.findMany>>,
       buildingHypotheses: [] as { id: string; title: string }[],
       failedBuilds: [] as { id: string; title: string }[],
-      previewUrls: {} as Record<string, string>,
+      previewUrls: {} as Record<string, { control?: string; treatment?: string }>,
     };
   }
 };
@@ -485,15 +489,19 @@ export default function ExperimentsIndex() {
                         : "—"}
                     </s-table-cell>
                     <s-table-cell>
-                      {previewUrls[exp.id] ? (
-                        <a
-                          href={previewUrls[exp.id]}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{ whiteSpace: "nowrap" }}
-                        >
-                          Preview ↗
-                        </a>
+                      {previewUrls[exp.id]?.control || previewUrls[exp.id]?.treatment ? (
+                        <span style={{ whiteSpace: "nowrap", display: "inline-flex", gap: 10 }}>
+                          {previewUrls[exp.id]?.control && (
+                            <a href={previewUrls[exp.id].control} target="_blank" rel="noreferrer">
+                              Control ↗
+                            </a>
+                          )}
+                          {previewUrls[exp.id]?.treatment && (
+                            <a href={previewUrls[exp.id].treatment} target="_blank" rel="noreferrer">
+                              Variant ↗
+                            </a>
+                          )}
+                        </span>
                       ) : (
                         "—"
                       )}

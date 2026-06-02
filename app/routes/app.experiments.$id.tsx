@@ -154,12 +154,21 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   if (intent === "reject_approval") {
     try {
-      await prisma.experiment.update({
-        where: { id: params.id, shopId },
-        data: { status: "draft" },
+      // Mark the source hypothesis qa_failed (so it shows under "Build failed"
+      // with a Retry option) and delete the orphaned experiment — mirrors the
+      // qaReview reject cleanup, so no stale "promoted" hypothesis or ghost draft
+      // is left behind.
+      await prisma.hypothesis.updateMany({
+        where: { promotedExperimentId: params.id, shopId },
+        data: { status: "qa_failed", promotedExperimentId: null },
       });
-      return { success: true };
+      await prisma.event.deleteMany({ where: { experimentId: params.id } });
+      await prisma.result.deleteMany({ where: { experimentId: params.id } });
+      await prisma.variant.deleteMany({ where: { experimentId: params.id } });
+      await prisma.experiment.delete({ where: { id: params.id, shopId } });
+      throw redirect("/app");
     } catch (error) {
+      if (error instanceof Response) throw error;
       console.error("[experiments.$id] reject_approval error", error);
       return { error: "Failed to reject experiment." };
     }

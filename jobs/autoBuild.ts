@@ -754,13 +754,18 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
       if (rr.type === "text") {
         const rjson = rr.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
         try {
-          const retried = JSON.parse(rjson);
+          // Newline-tolerant parse (regenerated multi-line CSS/JS often has raw
+          // newlines in string values that bare JSON.parse would choke on).
+          const retried = parsePatchesJson<typeof patches>(rjson);
           extractInlineScripts(retried);
+          // Re-ground selectors: a render retry can introduce NEW selectors, so
+          // they must pass the same existence check the first attempt did.
+          const retrySel = validateVariantSelectors(retried.jsPatch ?? null, retried.htmlPatch ?? null, selVocab);
           const render2 = validateVariantAgainstHtml({
             htmlPatch: retried.htmlPatch ?? null, cssPatch: retried.cssPatch ?? null,
             jsPatch: retried.jsPatch ?? null, pageType: hypothesis.pageType, deviceType: recSeg?.deviceType ?? null, pageHtml,
           });
-          if (render2.ok) { patches = retried; render = render2; }
+          if (render2.ok && retrySel.ok) { patches = retried; render = render2; }
         } catch { /* keep original; render stays failed */ }
       }
       if (!render.ok) {
