@@ -235,6 +235,44 @@
     }).catch(function () {});
   }
 
+  // ── Draggable helper (preview banner) ────────────────────────────────────────
+  function makeDraggable(el) {
+    var dragging = false, startX = 0, startY = 0, originLeft = 0, originTop = 0;
+    function pointerDown(e) {
+      dragging = true;
+      var pt = e.touches ? e.touches[0] : e;
+      var rect = el.getBoundingClientRect();
+      // Switch from bottom/right anchoring to absolute top/left at current spot.
+      el.style.left = rect.left + 'px';
+      el.style.top = rect.top + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+      originLeft = rect.left; originTop = rect.top;
+      startX = pt.clientX; startY = pt.clientY;
+      el.style.cursor = 'grabbing';
+      e.preventDefault();
+    }
+    function pointerMove(e) {
+      if (!dragging) return;
+      var pt = e.touches ? e.touches[0] : e;
+      var nx = originLeft + (pt.clientX - startX);
+      var ny = originTop + (pt.clientY - startY);
+      // Keep it on-screen.
+      nx = Math.max(0, Math.min(nx, window.innerWidth - el.offsetWidth));
+      ny = Math.max(0, Math.min(ny, window.innerHeight - el.offsetHeight));
+      el.style.left = nx + 'px';
+      el.style.top = ny + 'px';
+      e.preventDefault();
+    }
+    function pointerUp() { dragging = false; el.style.cursor = 'grab'; }
+    el.addEventListener('mousedown', pointerDown);
+    document.addEventListener('mousemove', pointerMove);
+    document.addEventListener('mouseup', pointerUp);
+    el.addEventListener('touchstart', pointerDown, { passive: false });
+    document.addEventListener('touchmove', pointerMove, { passive: false });
+    document.addEventListener('touchend', pointerUp);
+  }
+
   // ── Preview mode ─────────────────────────────────────────────────────────────
   var previewParams        = new URLSearchParams(window.location.search);
   var previewExperimentId  = previewParams.get('cro_preview_experiment');
@@ -265,16 +303,22 @@
 
           applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
 
-          // Preview banner
+          // Preview banner — draggable so it never blocks the variant being QA'd.
           var banner = document.createElement('div');
           banner.id = 'cro-preview-banner';
           banner.style.cssText = [
-            'position:fixed', 'bottom:16px', 'right:16px', 'z-index:999999',
+            'position:fixed', 'bottom:16px', 'right:16px', 'z-index:2147483647',
             'background:#000', 'color:#fff', 'font-size:12px', 'padding:8px 12px',
-            'border-radius:6px', 'font-family:sans-serif', 'opacity:0.85',
-            'pointer-events:none',
+            'border-radius:6px', 'font-family:sans-serif', 'opacity:0.9',
+            'cursor:grab', 'user-select:none', '-webkit-user-select:none',
+            'box-shadow:0 2px 8px rgba(0,0,0,0.3)', 'touch-action:none',
+            'display:flex', 'align-items:center', 'gap:6px',
           ].join(';');
-          banner.textContent = 'CRO Preview — ' + (variant.type || 'variant') + ' variant';
+          banner.innerHTML =
+            '<span style="opacity:0.6;font-size:13px;line-height:1">☰</span>' +
+            '<span>CRO Preview — ' + (variant.type || 'variant') + ' variant</span>';
+          banner.title = 'Drag to move';
+          makeDraggable(banner);
           document.body.appendChild(banner);
           break;
         }
