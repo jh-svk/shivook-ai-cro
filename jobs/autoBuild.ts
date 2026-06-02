@@ -97,8 +97,10 @@ FRONT-END ONLY: your patch only changes the storefront DOM. You CANNOT change an
 Shopify backend setting. Never fabricate a claim that the checkout wouldn't actually
 honour — e.g. do NOT inject "free shipping over $X", a discount/price/sale, real stock
 counts, or shipping/tax/checkout promises unless that exact rule already truthfully
-exists on the store. Stick to copy, layout, hierarchy, styling, and reordering of
-content that is already present.
+exists on the store. Never swap or replace a product IMAGE (media lives in the Shopify
+backend; an invented image URL would 404 or show the wrong product) — you may restyle an
+existing image but never change which image is shown. Stick to copy, layout, hierarchy,
+styling, and reordering of content that is already present.
 
 Design principles you MUST follow:
 - Every spacing decision must be intentional — no arbitrary padding values

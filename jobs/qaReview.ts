@@ -183,7 +183,10 @@ export async function runQaReview(shopId: string, experimentId: string, hypothes
   const forceApproval = isLowConfidence && requireApproval;
 
   if (result.decision === "reject") {
-    await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
+    await prisma.hypothesis.update({
+      where: { id: hypothesisId },
+      data: { status: "qa_failed", promotedExperimentId: null },
+    });
     await logOrchestrator(shopId, experimentId, "QA", "failed", {
       decision: "reject",
       confidence: result.confidence,
@@ -192,6 +195,20 @@ export async function runQaReview(shopId: string, experimentId: string, hypothes
       experimentId,
       hypothesisId,
     });
+    // Clean up the orphaned draft experiment so it doesn't linger in the
+    // dashboard "stuck in draft" (the hypothesis is qa_failed and shown under
+    // "Build failed" instead). Only delete if it's still a draft.
+    try {
+      const exp = await prisma.experiment.findUnique({ where: { id: experimentId }, select: { status: true } });
+      if (exp?.status === "draft") {
+        await prisma.event.deleteMany({ where: { experimentId } });
+        await prisma.result.deleteMany({ where: { experimentId } });
+        await prisma.variant.deleteMany({ where: { experimentId } });
+        await prisma.experiment.delete({ where: { id: experimentId } });
+      }
+    } catch (err) {
+      console.warn(`[qaReview] failed to clean up rejected draft ${experimentId}:`, err);
+    }
     console.log(`[qaReview] rejected experiment ${experimentId}: ${result.reasons.join(", ")}`);
     return;
   }
