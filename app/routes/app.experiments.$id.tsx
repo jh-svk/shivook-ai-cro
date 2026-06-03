@@ -599,14 +599,16 @@ export default function ExperimentDetail() {
                             Preview variant ↗
                           </s-button>
                         )}
-                        <s-button
-                          type="button"
-                          variant="secondary"
-                          href={`https://${shopDomain}${previewPath}`}
-                          target="_blank"
-                        >
-                          Preview control ↗
-                        </s-button>
+                        {variant.type === "control" && (
+                          <s-button
+                            type="button"
+                            variant="secondary"
+                            href={`https://${shopDomain}${previewPath}`}
+                            target="_blank"
+                          >
+                            Preview control ↗
+                          </s-button>
+                        )}
                         {hasCode && (
                           <s-button
                             type="button"
