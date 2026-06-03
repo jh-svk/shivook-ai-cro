@@ -1,5 +1,5 @@
 import { getBoss } from "../lib/pgboss.server";
-import { computeStats } from "../lib/stats";
+import { computeStats, proportionPValue, poissonRatePValue } from "../lib/stats";
 import { writeKnowledgeBaseEntry, writePlatformLearning } from "../lib/knowledgeBase.server";
 import prisma from "../app/db.server";
 
@@ -118,6 +118,28 @@ export async function processResultRefresh(experimentId: string) {
   const aovLift =
     controlAov > 0 && treatmentAov > 0 ? liftPct(treatmentAov, controlAov) : null;
 
+  // Per-metric frequentist p-values
+  const addToCartPValue = proportionPValue(
+    controlVisitors, controlAddToCartRate,
+    treatmentVisitors, treatmentAddToCartRate
+  );
+  const checkoutPValue = proportionPValue(
+    controlVisitors, controlCheckoutRate,
+    treatmentVisitors, treatmentCheckoutRate
+  );
+  const convRatePValue = proportionPValue(
+    controlVisitors, stats.controlConversionRate,
+    treatmentVisitors, stats.treatmentConversionRate
+  );
+  const aovPValue =
+    controlPurchases >= 10 && treatmentPurchases >= 10
+      ? poissonRatePValue(controlPurchases, controlAov, treatmentPurchases, treatmentAov)
+      : null;
+  const revPerVisitorPValue = poissonRatePValue(
+    controlVisitors, controlRevPerVisitor,
+    treatmentVisitors, treatmentRevPerVisitor
+  );
+
   const aovTripped =
     controlAov > 0 && treatmentAov > 0 &&
     treatmentAov < controlAov * (1 - AOV_GUARDRAIL_THRESHOLD);
@@ -158,6 +180,12 @@ export async function processResultRefresh(experimentId: string) {
     checkoutRateLift,
     revPerVisitorLift,
     aovLift,
+    // Per-metric p-values
+    addToCartPValue,
+    checkoutPValue,
+    convRatePValue,
+    aovPValue,
+    revPerVisitorPValue,
   };
 
   await prisma.result.upsert({
