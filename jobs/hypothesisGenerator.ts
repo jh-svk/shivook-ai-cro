@@ -12,6 +12,7 @@ import { getBoss } from "../lib/pgboss.server";
 import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchPlatformInsights } from "../lib/knowledgeBase.server";
+import { segmentSignature } from "../lib/segmentSignature.server";
 
 export const HYPOTHESIS_GENERATOR_QUEUE = "hypothesis-generator";
 
@@ -100,14 +101,6 @@ function buildAvailableSegments(dataSnapshot: unknown): AvailableSegments {
   };
 }
 
-/** Canonical "page + segment" signature — used to prevent duplicate-segment tests. */
-function segmentSignature(pageType: string, s: SegmentShape | null | undefined): string {
-  const d = s?.deviceType || "any";
-  const t = s?.trafficSource || "any";
-  const v = s?.visitorType || "any";
-  const g = (s?.geoCountry ?? []).slice().sort().join(",") || "any";
-  return `${pageType}|${d}|${t}|${v}|${g}`;
-}
 
 /**
  * Clamp an AI-proposed segment to real allowed values. Every hypothesis must be
