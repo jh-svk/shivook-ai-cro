@@ -49,7 +49,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
     const experiment = await prisma.experiment.findUnique({
       where: { id: params.id, shopId: shop.id },
-      include: { variants: true, result: true, segment: true },
+      include: { variants: true, result: true, segment: true, variantResults: true },
     });
     if (!experiment) throw new Response("Not Found", { status: 404 });
 
@@ -303,7 +303,14 @@ export default function ExperimentDetail() {
     });
 
   const control = experiment.variants.find((v) => v.type === "control");
-  const treatment = experiment.variants.find((v) => v.type === "treatment");
+  // All treatment arms, stable order (createdAt) — supports A/B/n.
+  const treatments = experiment.variants
+    .filter((v) => v.type !== "control")
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const winningVariant =
+    experiment.variants.find((v) => v.id === experiment.winningVariantId) ?? null;
+  // Per-arm rows keyed by variantId for the breakdown table.
+  const arDetail = new Map(experiment.variantResults.map((vr) => [vr.variantId, vr]));
   const result = experiment.result;
   const actions = ALLOWED_ACTIONS[experiment.status] ?? [];
 
@@ -384,13 +391,13 @@ export default function ExperimentDetail() {
       {/* Ship the winner — shown when experiment concluded with a winner */}
       {experiment.status === "concluded" &&
         (experiment.result?.probToBeatControl ?? 0) >= 0.95 && (() => {
-          const treatment = experiment.variants.find((v) => v.type === "treatment");
+          const treatment = winningVariant ?? treatments[0];
           if (!treatment) return null;
           return (
             <s-section heading="Ship the winner">
               <s-stack direction="block" gap="base">
                 <s-paragraph>
-                  Treatment won with {((experiment.result!.probToBeatControl ?? 0) * 100).toFixed(1)}% probability to beat control.
+                  {treatment.name} won with {((experiment.result!.probToBeatControl ?? 0) * 100).toFixed(1)}% probability to beat control.
                   To make this permanent, paste the code below into your theme.
                 </s-paragraph>
                 {treatment.htmlPatch && (
@@ -558,6 +565,44 @@ export default function ExperimentDetail() {
                 </tbody>
               </table>
             </s-box>
+
+            {/* Per-arm breakdown — shown for true A/B/n tests (≥ 2 treatments) */}
+            {treatments.length >= 2 && experiment.variantResults.length > 0 && (
+              <s-box padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small">
+                  <s-text>Arm breakdown</s-text>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        {["Arm", "Visitors", "Conv rate", "Lift", "P(beat control)", "P(best)"].map((h, i) => (
+                          <th key={h} style={{ textAlign: i === 0 ? "left" : "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5", color: "#6d7175", fontWeight: 500 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[control, ...treatments].filter((v): v is NonNullable<typeof v> => Boolean(v)).map((v) => {
+                        const d = arDetail.get(v.id);
+                        const isWinner = v.id === experiment.winningVariantId;
+                        const tdR = { textAlign: "right" as const, padding: "4px 8px" };
+                        return (
+                          <tr key={v.id} style={isWinner ? { fontWeight: 600, background: "#f1f8f4" } : undefined}>
+                            <td style={{ padding: "4px 8px" }}>{v.name}{isWinner ? " 🏆" : ""}</td>
+                            <td style={tdR}>{d ? d.visitors.toLocaleString() : "—"}</td>
+                            <td style={tdR}>{d ? `${(d.conversionRate * 100).toFixed(2)}%` : "—"}</td>
+                            <td style={tdR}>{d?.relativeLift != null ? `${d.relativeLift > 0 ? "+" : ""}${(d.relativeLift * 100).toFixed(1)}%` : "—"}</td>
+                            <td style={tdR}>{d?.probToBeatControl != null ? `${(d.probToBeatControl * 100).toFixed(0)}%` : "—"}</td>
+                            <td style={tdR}>{d?.probBestArm != null ? `${(d.probBestArm * 100).toFixed(0)}%` : "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <s-text tone="neutral">
+                    P(best) is the probability each arm is the best of all arms — it already accounts for comparing multiple variants at once.
+                  </s-text>
+                </s-stack>
+              </s-box>
+            )}
           </s-stack>
         ) : (
           <s-paragraph>
@@ -568,11 +613,12 @@ export default function ExperimentDetail() {
 
       <s-section heading="Variants">
         <s-stack direction="block" gap="large">
-          {[control, treatment]
+          {[control, ...treatments]
             .filter((v): v is NonNullable<typeof v> => Boolean(v))
             .map((variant) => {
               const isExpanded = expandedVariants.has(variant.id);
               const hasCode = variant.htmlPatch || variant.cssPatch || variant.jsPatch;
+              const isWinner = variant.id === experiment.winningVariantId;
               return (
                 <s-box key={variant.id} padding="base" borderWidth="base" borderRadius="base">
                   <s-stack direction="block" gap="base">
@@ -580,6 +626,7 @@ export default function ExperimentDetail() {
                     <s-stack direction="inline" gap="base">
                       <s-heading>{variant.name}</s-heading>
                       <s-badge>{variant.type}</s-badge>
+                      {isWinner && <s-badge tone="success">Winner</s-badge>}
                     </s-stack>
 
                     {variant.description && (

@@ -63,9 +63,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const treatmentJsError = validateJsPatch(get("treatmentJsPatch") || null);
   if (treatmentJsError) return { error: `Treatment variant: ${treatmentJsError}` };
 
+  // Optional third arm (A/B/n). Present only when the merchant added it in the UI.
+  const hasVariantC = get("hasVariantC") === "1";
+  if (hasVariantC) {
+    const v2JsError = validateJsPatch(get("treatment2JsPatch") || null);
+    if (v2JsError) return { error: `Variant C: ${v2JsError}` };
+  }
+
   const maxRuntimeDays = Math.max(1, parseInt(get("maxRuntimeDays") || "28", 10));
 
   const nullIfEmpty = (v: string) => v || null;
+  const buildVariant = (prefix: string, type: string, fallbackName: string) => ({
+    type,
+    name: get(`${prefix}Name`) || fallbackName,
+    description: get(`${prefix}Description`),
+    htmlPatch: nullIfEmpty(get(`${prefix}HtmlPatch`)),
+    cssPatch: nullIfEmpty(get(`${prefix}CssPatch`)),
+    jsPatch: nullIfEmpty(get(`${prefix}JsPatch`)),
+  });
 
   try {
     const segmentIdRaw = String(fd.get("segmentId") ?? "").trim();
@@ -84,22 +99,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         segmentId,
         variants: {
           create: [
-            {
-              type: "control",
-              name: get("controlName") || "Control",
-              description: get("controlDescription"),
-              htmlPatch: nullIfEmpty(get("controlHtmlPatch")),
-              cssPatch: nullIfEmpty(get("controlCssPatch")),
-              jsPatch: nullIfEmpty(get("controlJsPatch")),
-            },
-            {
-              type: "treatment",
-              name: get("treatmentName") || "Treatment",
-              description: get("treatmentDescription"),
-              htmlPatch: nullIfEmpty(get("treatmentHtmlPatch")),
-              cssPatch: nullIfEmpty(get("treatmentCssPatch")),
-              jsPatch: nullIfEmpty(get("treatmentJsPatch")),
-            },
+            buildVariant("control", "control", "Control"),
+            buildVariant("treatment", "treatment", "Treatment"),
+            ...(hasVariantC ? [buildVariant("treatment2", "treatment", "Variant C")] : []),
           ],
         },
       },
@@ -150,6 +152,12 @@ export default function NewExperiment() {
   const [treatmentHtml, setTreatmentHtml] = useState("");
   const [treatmentCss, setTreatmentCss] = useState("");
   const [treatmentJs, setTreatmentJs] = useState("");
+
+  // Optional third arm (A/B/n). Cap at 3 arms total.
+  const [showVariantC, setShowVariantC] = useState(false);
+  const [variantCHtml, setVariantCHtml] = useState("");
+  const [variantCCss, setVariantCCss] = useState("");
+  const [variantCJs, setVariantCJs] = useState("");
 
   return (
     <s-page heading="New experiment">
@@ -223,8 +231,8 @@ export default function NewExperiment() {
             )}
             <s-banner tone="info" heading="Traffic split">
               <s-paragraph>
-                Phase 1 uses a fixed 50/50 traffic split between control and
-                treatment.
+                Traffic is split evenly across all arms — 50/50 for a 2-arm test,
+                or roughly a third each when you add a third variant.
               </s-paragraph>
             </s-banner>
           </s-stack>
@@ -303,6 +311,67 @@ export default function NewExperiment() {
             />
           </s-stack>
         </s-section>
+
+        {showVariantC ? (
+          <s-section heading="Variant C">
+            <s-stack direction="block" gap="base">
+              <input type="hidden" name="hasVariantC" value="1" />
+              <s-text-field
+                name="treatment2Name"
+                label="Variant name"
+                value="Variant C"
+              />
+              <s-text-area
+                name="treatment2Description"
+                label="Description"
+                placeholder="Describe what this second variant changes"
+                rows={2}
+              />
+              <CodeEditor
+                value={variantCHtml}
+                onChange={setVariantCHtml}
+                language="html"
+                label="HTML patch"
+                name="treatment2HtmlPatch"
+              />
+              <CodeEditor
+                value={variantCCss}
+                onChange={setVariantCCss}
+                language="css"
+                label="CSS patch"
+                name="treatment2CssPatch"
+              />
+              <CodeEditor
+                value={variantCJs}
+                onChange={setVariantCJs}
+                language="javascript"
+                label="JS patch"
+                name="treatment2JsPatch"
+              />
+              <s-button
+                type="button"
+                variant="tertiary"
+                tone="critical"
+                onClick={() => setShowVariantC(false)}
+              >
+                Remove Variant C
+              </s-button>
+            </s-stack>
+          </s-section>
+        ) : (
+          <s-section>
+            <s-stack direction="block" gap="base">
+              <s-button type="button" variant="tertiary" onClick={() => setShowVariantC(true)}>
+                + Add a third variant (A/B/n test)
+              </s-button>
+              <s-text tone="neutral">
+                Up to 3 arms. A 3-arm test splits traffic three ways, so it needs
+                roughly 450+ views/day on this page to reach a decision in a
+                reasonable window.
+              </s-text>
+            </s-stack>
+          </s-section>
+        )}
 
         <s-section>
           <s-button type="submit" variant="primary" {...(isSubmitting ? { loading: true } : {})}>
