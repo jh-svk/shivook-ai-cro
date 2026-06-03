@@ -173,6 +173,7 @@ async function createExperiment(opts: {
   shopId: string; segmentId?: string | null; name: string; hypothesis: string;
   pageType: string; elementType: string; targetMetric: string; status: string;
   startedDaysAgo?: number; concludedDaysAgo?: number; treatmentCss?: string; treatmentDesc: string;
+  treatment2Css?: string; treatment2Desc?: string; // optional 3rd arm (A/B/n)
 }) {
   const now = Date.now();
   return prisma.experiment.create({
@@ -198,6 +199,13 @@ async function createExperiment(opts: {
             htmlPatch: "<div class=\"cro-demo\">AI-generated variant</div>",
             cssPatch: opts.treatmentCss ?? null,
           },
+          ...(opts.treatment2Desc
+            ? [{
+                type: "treatment", name: "Variant C", description: opts.treatment2Desc,
+                htmlPatch: "<div class=\"cro-demo\">AI-generated variant C</div>",
+                cssPatch: opts.treatment2Css ?? null,
+              }]
+            : []),
         ],
       },
     },
@@ -214,6 +222,8 @@ type Spec = {
   status: string; startedDaysAgo?: number; concludedDaysAgo?: number;
   seg?: string | null; device: string; source?: string | null; geo?: string | null; visitor?: string | null;
   views: number; atcLift: number; treatmentAovMult?: number; css?: string; desc: string;
+  // Optional second treatment → makes this a 3-arm (A/B/n) test.
+  atcLift2?: number; desc2?: string;
   windowEndDaysAgo?: number; // events stop N days ago (for paused/concluded); default 0 (now)
 };
 
@@ -310,6 +320,16 @@ const SPECS: Spec[] = [
     status: "active", startedDaysAgo: 20, windowEndDaysAgo: 1, seg: "mob_au_org", device: "mobile", source: "organic", geo: "AU",
     views: 5000, atcLift: 0.16, css: STICKY_CSS, desc: "Express “Buy now” button on mobile PDP",
   },
+
+  // ── 3-arm (A/B/n) test — control + two treatments, Variant C the winner ──
+  {
+    name: "PDP Hero CTA — Two Variants (A/B/n)",
+    hypothesis: "A bolder product-page CTA increases add-to-cart; we test two designs at once.",
+    pageType: "product", elementType: "cta", targetMetric: "add_to_cart_rate",
+    status: "active", startedDaysAgo: 16, device: "all",
+    views: 6000, atcLift: 0.08, css: STICKY_CSS, desc: "Variant B — high-contrast filled CTA",
+    atcLift2: 0.19, desc2: "Variant C — full-width sticky CTA with trust line",
+  },
 ];
 
 async function main() {
@@ -324,8 +344,6 @@ async function main() {
   if (cleanOnly) { console.log("✅ Demo data cleaned. Done."); return; }
 
   const now = Date.now();
-  const variantOf = (exp: { variants: { id: string; type: string }[] }, t: string) =>
-    exp.variants.find((v) => v.type === t)!.id;
 
   console.log(`Seeding demo segments…  (SCALE=${SCALE})`);
   const segIds: Record<string, string> = {};
@@ -349,19 +367,26 @@ async function main() {
       pageType: s.pageType, elementType: s.elementType, targetMetric: s.targetMetric,
       status: s.status, startedDaysAgo: s.startedDaysAgo,
       treatmentCss: s.css, treatmentDesc: s.desc,
+      ...(s.atcLift2 != null ? { treatment2Css: s.css, treatment2Desc: s.desc2 } : {}),
     });
 
     const startMs = now - (s.startedDaysAgo ?? 7) * DAY;
     const endMs = now - (s.windowEndDaysAgo ?? 0) * DAY;
     const views = Math.round(s.views * SCALE);
 
+    // Match arms by variant name (both treatments share type "treatment").
+    const idOf = (name: string) => exp.variants.find((v) => v.name === name)!.id;
     const control = buildFunnel({ views, device: s.device, source: s.source, geo: s.geo, visitor: s.visitor, atcLift: 0 });
     const treatment = buildFunnel({ views, device: s.device, source: s.source, geo: s.geo, visitor: s.visitor, atcLift: s.atcLift, aovMult: s.treatmentAovMult });
 
     const rows = [
-      ...makeEvents(exp.id, variantOf(exp, "control"), `e${idx}c`, control, startMs, endMs),
-      ...makeEvents(exp.id, variantOf(exp, "treatment"), `e${idx}t`, treatment, startMs, endMs),
+      ...makeEvents(exp.id, idOf("Control"), `e${idx}c`, control, startMs, endMs),
+      ...makeEvents(exp.id, idOf("Treatment"), `e${idx}t`, treatment, startMs, endMs),
     ];
+    if (s.atcLift2 != null) {
+      const treatment2 = buildFunnel({ views, device: s.device, source: s.source, geo: s.geo, visitor: s.visitor, atcLift: s.atcLift2 });
+      rows.push(...makeEvents(exp.id, idOf("Variant C"), `e${idx}c2`, treatment2, startMs, endMs));
+    }
     await insertEvents(rows);
     totalEvents += rows.length;
     eventBearing.push({ id: exp.id, name: exp.name });
