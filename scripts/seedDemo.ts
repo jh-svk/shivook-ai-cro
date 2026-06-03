@@ -137,6 +137,7 @@ async function cleanDemo(shopId: string) {
   if (ids.length > 0) {
     await prisma.event.deleteMany({ where: { experimentId: { in: ids } } });
     await prisma.result.deleteMany({ where: { experimentId: { in: ids } } });
+    await prisma.variantResult.deleteMany({ where: { experimentId: { in: ids } } }).catch(() => {});
     await prisma.knowledgeBase.deleteMany({ where: { experimentId: { in: ids } } }).catch(() => {});
     await prisma.variant.deleteMany({ where: { experimentId: { in: ids } } });
     await prisma.experiment.deleteMany({ where: { id: { in: ids } } });
