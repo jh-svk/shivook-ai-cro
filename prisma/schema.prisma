@@ -186,6 +186,13 @@ model Result {
   revPerVisitorLift       Float?
   aovLift                 Float?
 
+  // Per-metric frequentist p-values (two-proportion z-test for rates; Poisson rate test for revenue metrics)
+  addToCartPValue     Float?
+  checkoutPValue      Float?
+  convRatePValue      Float?
+  aovPValue           Float?
+  revPerVisitorPValue Float?
+
   experiment              Experiment @relation(fields: [experimentId], references: [id])
 
   @@map("results")

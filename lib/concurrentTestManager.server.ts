@@ -1,17 +1,6 @@
 import prisma from "../app/db.server";
 import { getPlanConcurrentLimit } from "./planGate.server";
-
-/** Canonical signature of a test's audience: page type + device + audience + geo. */
-function audienceSignature(
-  pageType: string,
-  seg: { deviceType: string | null; visitorType: string | null; trafficSource: string | null; geoCountry: string[] } | null,
-): string {
-  const d = seg?.deviceType || "all";
-  const v = seg?.visitorType || "all";
-  const t = seg?.trafficSource || "all";
-  const g = (seg?.geoCountry ?? []).slice().sort().join(",") || "all";
-  return `${pageType}|${d}|${v}|${t}|${g}`;
-}
+import { segmentSignature } from "./segmentSignature.server";
 
 export async function canActivateExperiment(
   experimentId: string
@@ -38,12 +27,12 @@ export async function canActivateExperiment(
   // Mutual exclusion: never run TWO tests on the exact same audience
   // (page type + device + audience + geo) at once — overlapping exposure would
   // contaminate both tests' data.
-  const mySig = audienceSignature(pageType, segment);
+  const mySig = segmentSignature(pageType, segment);
   const activeOnSamePage = await prisma.experiment.findMany({
     where: { shopId, pageType, status: "active", id: { not: experimentId } },
     select: { id: true, segment: true },
   });
-  const clash = activeOnSamePage.find((e) => audienceSignature(pageType, e.segment) === mySig);
+  const clash = activeOnSamePage.find((e) => segmentSignature(pageType, e.segment) === mySig);
   if (clash) {
     return {
       allowed: false,

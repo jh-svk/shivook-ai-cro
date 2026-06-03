@@ -179,42 +179,80 @@
   }
 
   // ── DOM patching ────────────────────────────────────────────────────────────
-  function applyPatch(htmlPatch, cssPatch, jsPatch) {
-    if (cssPatch) {
+  function applyPatch(htmlPatch, cssPatch, jsPatch, variantId) {
+    // CSS: inject once per variantId (idempotent via element id)
+    var styleId = variantId ? 'cro-style-' + variantId : null;
+    if (cssPatch && !(styleId && document.getElementById(styleId))) {
       try {
         var style = document.createElement('style');
+        if (styleId) style.id = styleId;
         style.textContent = cssPatch;
         document.head.appendChild(style);
       } catch (_) {}
     }
 
-    if (htmlPatch) {
+    // HTML: inject once per variantId — skip if our marker is already in the DOM
+    var patchedAttr = 'data-cro-patched';
+    var alreadyPatched = variantId
+      ? document.querySelector('[' + patchedAttr + '="' + variantId + '"]')
+      : false;
+    if (htmlPatch && !alreadyPatched) {
       try {
         var frag = document.createRange().createContextualFragment(htmlPatch);
+        // Mark the first element in the fragment so we can detect double-apply
+        var fragChild = frag.firstChild;
+        while (fragChild && fragChild.nodeType !== 1) fragChild = fragChild.nextSibling;
+        if (fragChild && variantId) fragChild.setAttribute(patchedAttr, variantId);
         document.body.appendChild(frag);
       } catch (_) {
         try {
           var tmp = document.createElement('div');
           tmp.innerHTML = htmlPatch;
+          if (variantId && tmp.firstElementChild) tmp.firstElementChild.setAttribute(patchedAttr, variantId);
           while (tmp.firstChild) document.body.appendChild(tmp.firstChild);
         } catch (_2) {}
       }
     }
 
-    if (jsPatch) {
+    // JS: run once per variantId per page load
+    var jsKey = variantId ? '_cro_js_' + variantId.replace(/-/g, '_') : null;
+    if (jsPatch && !(jsKey && window[jsKey])) {
       try {
-        // Some generated variants wrap their JS in <script>…</script>. new Function
-        // expects raw JS, so a wrapped patch is a syntax error and the variant
-        // silently does nothing. Strip any <script> wrapper before executing.
+        if (jsKey) window[jsKey] = true;
         var code = jsPatch;
         if (/<script[\s>]/i.test(code)) {
-          var inner = code.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, '');
-          code = inner.trim();
+          code = code.replace(/<script[^>]*>/gi, '').replace(/<\/script>/gi, '').trim();
         }
         // eslint-disable-next-line no-new-func
         withVisiblePreferredQuery(function () { (new Function(code))(); });
-      } catch (_) {}
+      } catch (_) {
+        if (jsKey) window[jsKey] = false;
+      }
     }
+  }
+
+  // ── MutationObserver re-apply ─────────────────────────────────────────────
+  // Re-applies the active patch when AJAX mutates the DOM (e.g. cart empty
+  // state, dynamically-loaded sections). Debounced 200ms. Re-entrancy guard
+  // prevents our own DOM changes from re-triggering the observer.
+  var _cro_applying = false;
+  var _cro_reapply_timer = null;
+
+  function startMutationObserver(htmlPatch, cssPatch, jsPatch, variantId) {
+    if (!window.MutationObserver) return;
+    var observer = new MutationObserver(function () {
+      if (_cro_applying) return;
+      clearTimeout(_cro_reapply_timer);
+      _cro_reapply_timer = setTimeout(function () {
+        _cro_applying = true;
+        try {
+          applyPatch(htmlPatch, cssPatch, jsPatch, variantId);
+        } finally {
+          _cro_applying = false;
+        }
+      }, 200);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   // ── Event firing (sendBeacon with fetch fallback) ───────────────────────────
@@ -301,7 +339,8 @@
           }
           if (!variant) break;
 
-          applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+          applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch, variant.id);
+          startMutationObserver(variant.htmlPatch, variant.cssPatch, variant.jsPatch, variant.id);
 
           // Preview banner — draggable so it never blocks the variant being QA'd.
           var banner = document.createElement('div');
@@ -396,7 +435,8 @@
       if (!variant) return;
 
       lsSet(LS_VID_PFX + exp.id, variant.id);
-      applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch);
+      applyPatch(variant.htmlPatch, variant.cssPatch, variant.jsPatch, variant.id);
+      startMutationObserver(variant.htmlPatch, variant.cssPatch, variant.jsPatch, variant.id);
       fireViewEvent({
         experimentId: exp.id,
         variantId:    variant.id,

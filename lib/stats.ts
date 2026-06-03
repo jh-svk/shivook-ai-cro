@@ -139,3 +139,53 @@ export function computeStats(
     credibleIntervalUpper,
   };
 }
+
+// ── Frequentist p-value helpers (supplementary per-metric signals) ────────────
+
+/** Abramowitz & Stegun normal CDF approximation (error < 7.5e-8). */
+function normalCdf(z: number): number {
+  if (z < 0) return 1 - normalCdf(-z);
+  const t = 1 / (1 + 0.2316419 * z);
+  const poly =
+    t * (0.319381530 +
+    t * (-0.356563782 +
+    t * (1.781477937 +
+    t * (-1.821255978 +
+    t * 1.330274429))));
+  return 1 - 0.39894228 * Math.exp(-0.5 * z * z) * poly;
+}
+
+/**
+ * Two-proportion z-test, two-tailed.
+ * n1/n2: sample sizes, p1/p2: observed proportions (0–1).
+ * Returns null when sample is too small (< 10) or edge-case proportions.
+ */
+export function proportionPValue(
+  n1: number, p1: number,
+  n2: number, p2: number
+): number | null {
+  if (n1 < 10 || n2 < 10) return null;
+  const pPool = (p1 * n1 + p2 * n2) / (n1 + n2);
+  if (pPool <= 0 || pPool >= 1) return null;
+  const se = Math.sqrt(pPool * (1 - pPool) * (1 / n1 + 1 / n2));
+  if (se === 0) return null;
+  const z = Math.abs((p2 - p1) / se);
+  return 2 * (1 - normalCdf(z));
+}
+
+/**
+ * Poisson rate test — used for revenue-per-visitor and AOV where we don't
+ * have per-order variance. Treats variance ≈ mean (Poisson assumption).
+ * n1/n2: denominators (visitors or purchases), r1/r2: rates (revenue/n).
+ * Returns null when sample is too small (< 10).
+ */
+export function poissonRatePValue(
+  n1: number, r1: number,
+  n2: number, r2: number
+): number | null {
+  if (n1 < 10 || n2 < 10) return null;
+  const se = Math.sqrt(r1 / n1 + r2 / n2);
+  if (se === 0) return null;
+  const z = Math.abs((r2 - r1) / se);
+  return 2 * (1 - normalCdf(z));
+}

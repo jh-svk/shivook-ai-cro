@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "results" ADD COLUMN     "addToCartPValue" DOUBLE PRECISION,
+ADD COLUMN     "aovPValue" DOUBLE PRECISION,
+ADD COLUMN     "checkoutPValue" DOUBLE PRECISION,
+ADD COLUMN     "convRatePValue" DOUBLE PRECISION,
+ADD COLUMN     "revPerVisitorPValue" DOUBLE PRECISION;
