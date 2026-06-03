@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation, useRevalidator } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
@@ -193,6 +193,35 @@ const ELEMENT_TONE: Record<string, BadgeTone> = {
   other: "neutral",
 };
 
+// Isolated so the 1s heartbeat only re-renders this component, not the whole page.
+function ResearchTimer({ startRef }: { startRef: RefObject<number | null> }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const elapsedSec = startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0;
+  const tooLong = elapsedSec > 300;
+  const mmss = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`;
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base">
+      <s-stack direction="block" gap="base">
+        <s-heading>{tooLong ? "Still working…" : "Researching your store…"}</s-heading>
+        <s-paragraph>
+          Analysing your store data and generating ranked hypotheses.
+          They'll appear below automatically — you don't need to refresh the page.
+        </s-paragraph>
+        <progress value={Math.min(elapsedSec, 180)} max={180} style={{ width: "100%", height: "10px" }} />
+        <s-text tone="neutral">
+          {tooLong
+            ? `Elapsed ${mmss} — this is taking longer than usual. It may still finish; if not, you can re-run.`
+            : `Elapsed ${mmss} · usually takes 1–3 minutes`}
+        </s-text>
+      </s-stack>
+    </s-box>
+  );
+}
+
 function iceLabel(score: number): { label: string; tone: "success" | "warning" | "critical" } {
   if (score >= 500) return { label: `ICE ${score} — High`, tone: "success" };
   if (score >= 200) return { label: `ICE ${score} — Medium`, tone: "warning" };
@@ -226,10 +255,13 @@ export default function HypothesesPage() {
   const awaitingHypotheses = reportFresh && !reportFailed && latestReportHypCount === 0;
 
   const [researching, setResearching] = useState(false);
-  const [, setTick] = useState(0); // 1s heartbeat to re-render the elapsed timer
   // Anchor the timer to a timestamp PERSISTED in localStorage so it keeps
   // counting from the real start across a page refresh (instead of resetting).
   const startRef = useRef<number | null>(null);
+  // Stable ref so the poll interval can always access the latest revalidator
+  // without being listed as a dep (which would recreate intervals every render).
+  const revalidatorRef = useRef(revalidator);
+  revalidatorRef.current = revalidator;
 
   const readStart = (): number | null => {
     try {
@@ -256,19 +288,18 @@ export default function HypothesesPage() {
     }
   }, [isGenerating, reportPending, awaitingHypotheses, researching]);
 
-  // While researching: poll the loader every 4s + tick the timer every 1s
+  // While researching: poll the loader every 4s.
+  // Heartbeat lives in ResearchTimer to avoid re-rendering the whole page every second.
   useEffect(() => {
     if (!researching) return;
     const poll = setInterval(() => {
       const elapsed = startRef.current ? (Date.now() - startRef.current) / 1000 : 0;
-      if (revalidator.state === "idle" && elapsed < 360) revalidator.revalidate();
+      if (revalidatorRef.current.state === "idle" && elapsed < 360) {
+        revalidatorRef.current.revalidate();
+      }
     }, 4000);
-    const heartbeat = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => {
-      clearInterval(poll);
-      clearInterval(heartbeat);
-    };
-  }, [researching, revalidator]);
+    return () => clearInterval(poll);
+  }, [researching]);
 
   // Stop once the hypotheses have actually landed, the report failed, or we time out.
   useEffect(() => {
@@ -281,10 +312,6 @@ export default function HypothesesPage() {
     }
   }, [researching, latestReportHypCount, reportFailed]);
 
-  const elapsedSec =
-    researching && startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0;
-  const tooLong = elapsedSec > 300;
-  const mmss = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`;
 
   return (
     <s-page heading="Hypothesis Backlog">
@@ -316,28 +343,7 @@ export default function HypothesesPage() {
             1–3 minutes.
           </s-paragraph>
           {researching ? (
-            <s-box padding="base" borderWidth="base" borderRadius="base">
-              <s-stack direction="block" gap="base">
-                <s-heading>
-                  {tooLong ? "Still working…" : "Researching your store…"}
-                </s-heading>
-                <s-paragraph>
-                  Analysing your store data and generating ranked hypotheses.
-                  They’ll appear below automatically — you don’t need to refresh
-                  the page.
-                </s-paragraph>
-                <progress
-                  value={Math.min(elapsedSec, 180)}
-                  max={180}
-                  style={{ width: "100%", height: "10px" }}
-                />
-                <s-text tone="neutral">
-                  {tooLong
-                    ? `Elapsed ${mmss} — this is taking longer than usual. It may still finish; if not, you can re-run.`
-                    : `Elapsed ${mmss} · usually takes 1–3 minutes`}
-                </s-text>
-              </s-stack>
-            </s-box>
+            <ResearchTimer startRef={startRef} />
           ) : (
             <>
               {latestReport && (
