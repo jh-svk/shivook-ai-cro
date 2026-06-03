@@ -294,6 +294,13 @@ export default function ExperimentDetail() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [expandedVariants, setExpandedVariants] = useState<Set<string>>(new Set());
+  const toggleCode = (variantId: string) =>
+    setExpandedVariants((prev) => {
+      const next = new Set(prev);
+      next.has(variantId) ? next.delete(variantId) : next.add(variantId);
+      return next;
+    });
 
   const control = experiment.variants.find((v) => v.type === "control");
   const treatment = experiment.variants.find((v) => v.type === "treatment");
@@ -563,60 +570,71 @@ export default function ExperimentDetail() {
         <s-stack direction="block" gap="large">
           {[control, treatment]
             .filter((v): v is NonNullable<typeof v> => Boolean(v))
-            .map((variant) => (
-              <s-box
-                key={variant.id}
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-              >
-                <s-stack direction="block" gap="base">
-                  <s-stack direction="inline" gap="base">
-                    <s-heading>{variant.name}</s-heading>
-                    <s-badge>{variant.type}</s-badge>
-                  </s-stack>
-                  {variant.description && (
-                    <s-paragraph>{variant.description}</s-paragraph>
-                  )}
-                  {variant.htmlPatch && (
-                    <CodePreview label="HTML" code={variant.htmlPatch} />
-                  )}
-                  {variant.cssPatch && (
-                    <CodePreview label="CSS" code={variant.cssPatch} />
-                  )}
-                  {variant.jsPatch && (
-                    <CodePreview label="JS" code={variant.jsPatch} />
-                  )}
-                  {!variant.htmlPatch &&
-                    !variant.cssPatch &&
-                    !variant.jsPatch && (
-                      <s-paragraph>
-                        No patches — serves the storefront as-is.
-                      </s-paragraph>
-                    )}
-                  {shopDomain && (
-                    <s-stack direction="block" gap="small">
-                      <s-button
-                        type="button"
-                        variant="secondary"
-                        href={`https://${shopDomain}${previewPath}${previewPath.includes("?") ? "&" : "?"}cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
-                        target="_blank"
-                      >
-                        Preview on storefront ↗
-                      </s-button>
-                      <s-text tone="neutral">
-                        Opens your storefront in a new tab with this variant applied. No effect on live traffic or results.
-                      </s-text>
-                      {experiment.pageType !== "homepage" && experiment.pageType !== "any" && (
-                        <s-text tone="neutral">
-                          Navigate to a {experiment.pageType} page to see the variant in context.
-                        </s-text>
-                      )}
+            .map((variant) => {
+              const isExpanded = expandedVariants.has(variant.id);
+              const hasCode = variant.htmlPatch || variant.cssPatch || variant.jsPatch;
+              return (
+                <s-box key={variant.id} padding="base" borderWidth="base" borderRadius="base">
+                  <s-stack direction="block" gap="base">
+                    {/* Header row */}
+                    <s-stack direction="inline" gap="base">
+                      <s-heading>{variant.name}</s-heading>
+                      <s-badge>{variant.type}</s-badge>
                     </s-stack>
-                  )}
-                </s-stack>
-              </s-box>
-            ))}
+
+                    {variant.description && (
+                      <s-paragraph>{variant.description}</s-paragraph>
+                    )}
+
+                    {/* Action row — always visible */}
+                    {shopDomain && (
+                      <s-stack direction="inline" gap="small">
+                        {variant.type === "treatment" && (
+                          <s-button
+                            type="button"
+                            variant="primary"
+                            href={`https://${shopDomain}${previewPath}${previewPath.includes("?") ? "&" : "?"}cro_preview_experiment=${experiment.id}&cro_preview_variant=${variant.id}`}
+                            target="_blank"
+                          >
+                            Preview variant ↗
+                          </s-button>
+                        )}
+                        <s-button
+                          type="button"
+                          variant="secondary"
+                          href={`https://${shopDomain}${previewPath}`}
+                          target="_blank"
+                        >
+                          Preview control ↗
+                        </s-button>
+                        {hasCode && (
+                          <s-button
+                            type="button"
+                            variant="tertiary"
+                            onClick={() => toggleCode(variant.id)}
+                          >
+                            {isExpanded ? "Hide code" : "</> View code"}
+                          </s-button>
+                        )}
+                      </s-stack>
+                    )}
+
+                    {/* Code panels — collapsed by default */}
+                    {isExpanded && (
+                      <s-stack direction="block" gap="base">
+                        {variant.htmlPatch && <CodePreview label="HTML" code={variant.htmlPatch} />}
+                        {variant.cssPatch && <CodePreview label="CSS" code={variant.cssPatch} />}
+                        {variant.jsPatch && <CodePreview label="JS" code={variant.jsPatch} />}
+                      </s-stack>
+                    )}
+
+                    {!hasCode && (
+                      <s-paragraph>No patches — serves the storefront as-is.</s-paragraph>
+                    )}
+                  </s-stack>
+                </s-box>
+              );
+            })}
         </s-stack>
       </s-section>
 
