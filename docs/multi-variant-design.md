@@ -1,8 +1,16 @@
 # Multi-variant (A/B/n) testing — design
 
-**Status:** Proposed. Not yet implemented.
-**Author:** drafted 2026-06-03.
+**Status:** ✅ Implemented on branch `feat/multi-variant-foundation` (steps 1–6). Drafted 2026-06-03, built 2026-06-03/04.
 **Scope:** Extend experiments from exactly `control + 1 treatment` to `control + up to 2 treatments` (3 arms max).
+
+**Implementation notes (as built):**
+- Step 1: `VariantResult` table + `Experiment.winningVariantId` (additive migration `20260603162652`).
+- Step 2: `computeMultiArmStats` in `lib/stats.ts` + 7 unit tests.
+- Step 3: `jobs/resultRefresh.ts` writes per-arm rows + multi-arm conclusion (winner = best arm AND beats control at 95%, not AOV-tripped).
+- Step 4: `experiment-injector.js` `assignVariant` → `hash % N`, sticky by variant id, legacy-string compatible.
+- Step 5: `/experiments/new` 3rd-arm authoring; `/experiments/:id` arm-breakdown table + winner badge + ship-the-winner uses `winningVariantId`.
+- Step 6: `jobs/autoBuild.ts` `maxArmsForTraffic()` gate (≥150 views/arm/day) + best-effort 2nd-treatment generation through the same QA gauntlet.
+- Validated end-to-end via `seedDemo` 3-arm test: Variant C wins (P(best)=100%); Treatment beats control (96%) but P(best)=0% → correctly not crowned.
 
 ## Why cap at 3 arms
 A/B/n splits traffic N ways, so each arm needs the same per-arm sample to reach significance. With our Bayesian min-runtime gate, each arm needs **≥ ~150 views/day** to conclude in a reasonable window. 3 arms ⇒ **≥ 450 views/day** on that page type; 4 arms ⇒ 600+, where the added wait rarely pays for the marginal learning. So: **hard cap 3 arms**, and arm count is gated on traffic (see §6).
