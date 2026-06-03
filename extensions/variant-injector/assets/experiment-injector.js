@@ -126,14 +126,39 @@
   }
 
   // ── Variant assignment (stable per visitor + experiment) ────────────────────
-  function assignVariant(visitorId, experimentId) {
-    var key    = LS_ASSIGN_PFX + experimentId;
+  // Supports N arms (A/B/n). Buckets the visitor into one of the experiment's
+  // variants with an even split, stored stickily by variant id. Honors both the
+  // new id-keyed storage and the legacy 'control'/'treatment' string.
+  function assignVariant(visitorId, exp) {
+    var variants = exp.variants || [];
+    if (variants.length === 0) return null;
+    // Deterministic ordering: control first, then by id — stable across loads
+    // and across visitors so the bucket index is meaningful and consistent.
+    var ordered = variants.slice().sort(function (a, b) {
+      if (a.type === 'control' && b.type !== 'control') return -1;
+      if (b.type === 'control' && a.type !== 'control') return 1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+
+    var key    = LS_ASSIGN_PFX + exp.id;
     var stored = lsGet(key);
-    if (stored === 'control' || stored === 'treatment') return stored;
-    var bucket = fnv32a(visitorId + '|' + experimentId) % 2;
-    var type   = bucket === 0 ? 'control' : 'treatment';
-    lsSet(key, type);
-    return type;
+    if (stored) {
+      // New format: stored value is a variant id.
+      for (var i = 0; i < ordered.length; i++) {
+        if (ordered[i].id === stored) return ordered[i];
+      }
+      // Legacy format: stored value is 'control'/'treatment' — migrate to id.
+      if (stored === 'control' || stored === 'treatment') {
+        for (var k = 0; k < ordered.length; k++) {
+          if (ordered[k].type === stored) { lsSet(key, ordered[k].id); return ordered[k]; }
+        }
+      }
+    }
+
+    var bucket = fnv32a(visitorId + '|' + exp.id) % ordered.length;
+    var chosen = ordered[bucket];
+    lsSet(key, chosen.id);
+    return chosen;
   }
 
   // ── Visibility helper ────────────────────────────────────────────────────────
@@ -427,11 +452,7 @@
       }
       if (!exp) return; // committed to a test on another page, or no match here
 
-      var variantType = assignVariant(rawVisitorId, exp.id);
-      var variant = null;
-      for (var j = 0; j < exp.variants.length; j++) {
-        if (exp.variants[j].type === variantType) { variant = exp.variants[j]; break; }
-      }
+      var variant = assignVariant(rawVisitorId, exp);
       if (!variant) return;
 
       lsSet(LS_VID_PFX + exp.id, variant.id);
