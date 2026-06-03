@@ -69,7 +69,26 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         })
       : null;
 
-    return { experiment, qaLog, shopDomain: shop.shopifyDomain, previewPath };
+    // Estimated monthly revenue impact from the variant
+    const result = experiment.result;
+    let monthlyImpact: number | null = null;
+    if (
+      result &&
+      result.controlRevPerVisitor != null &&
+      result.treatmentRevPerVisitor != null &&
+      experiment.startedAt
+    ) {
+      const daysRunning = Math.max(
+        1,
+        (Date.now() - experiment.startedAt.getTime()) / 86_400_000
+      );
+      const dailyVisitors =
+        (result.controlVisitors + result.treatmentVisitors) / daysRunning;
+      const rpvLift = result.treatmentRevPerVisitor - result.controlRevPerVisitor;
+      monthlyImpact = rpvLift * dailyVisitors * 30;
+    }
+
+    return { experiment, qaLog, shopDomain: shop.shopifyDomain, previewPath, monthlyImpact };
   } catch (error) {
     if (error instanceof Response) throw error;
     console.error("[experiments.$id] loader error", error);
@@ -233,6 +252,21 @@ function MetricRow({
   );
 }
 
+function PValueBadge({ p }: { p: number | null | undefined }) {
+  if (p == null) return <td style={{ textAlign: "right", padding: "4px 8px", color: "#8c9196" }}>—</td>;
+  const [bg, color, label] =
+    p < 0.05  ? ["#d3f0d3", "#1a6130", `p=${p.toFixed(3)} ✓`] :
+    p < 0.2   ? ["#fff3cd", "#7d5200", `p=${p.toFixed(3)} ~`] :
+                ["#fde8e8", "#8b1c1c", `p=${p.toFixed(2)} —`];
+  return (
+    <td style={{ textAlign: "right", padding: "4px 8px" }}>
+      <span style={{ background: bg, color, borderRadius: 4, padding: "2px 6px", fontSize: 11 }}>
+        {label}
+      </span>
+    </td>
+  );
+}
+
 function CodePreview({ label, code }: { label: string; code: string }) {
   return (
     <s-box>
@@ -255,7 +289,7 @@ function CodePreview({ label, code }: { label: string; code: string }) {
 }
 
 export default function ExperimentDetail() {
-  const { experiment, qaLog, shopDomain, previewPath } = useLoaderData<typeof loader>();
+  const { experiment, qaLog, shopDomain, previewPath, monthlyImpact } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -402,104 +436,121 @@ export default function ExperimentDetail() {
       <s-section heading="Results">
         {result ? (
           <s-stack direction="block" gap="base">
-            {result.probToBeatControl != null && (
-              <s-stack direction="inline" gap="base">
-                <s-badge tone={result.isSignificant ? "success" : "info"}>
-                  {result.isSignificant ? "Winner — 95% confidence" : "Not yet significant"}
-                </s-badge>
-                <s-text>
-                  P(beat control): {(result.probToBeatControl * 100).toFixed(1)}%
-                </s-text>
-              </s-stack>
-            )}
-
-            {/* Conversion funnel panel */}
-            <s-box padding="base" borderWidth="base" borderRadius="base">
-              <s-stack direction="block" gap="small">
-                <s-heading>Conversion funnel</s-heading>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Metric</th>
-                      <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Control</th>
-                      <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Treatment</th>
-                      <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Lift</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <MetricRow
-                      label="Views"
-                      control={result.controlVisitors.toLocaleString()}
-                      treatment={result.treatmentVisitors.toLocaleString()}
-                      lift={null}
-                    />
-                    {result.controlAddToCartRate != null && (
-                      <MetricRow
-                        label="Add to cart rate"
-                        control={`${(result.controlAddToCartRate * 100).toFixed(2)}%`}
-                        treatment={`${((result.treatmentAddToCartRate ?? 0) * 100).toFixed(2)}%`}
-                        lift={result.addToCartRateLift ?? null}
-                      />
-                    )}
-                    {result.controlCheckoutRate != null && (
-                      <MetricRow
-                        label="Checkout rate"
-                        control={`${(result.controlCheckoutRate * 100).toFixed(2)}%`}
-                        treatment={`${((result.treatmentCheckoutRate ?? 0) * 100).toFixed(2)}%`}
-                        lift={result.checkoutRateLift ?? null}
-                      />
-                    )}
-                    <MetricRow
-                      label="Conversion rate"
-                      control={`${(result.controlConversionRate * 100).toFixed(2)}%`}
-                      treatment={`${(result.treatmentConversionRate * 100).toFixed(2)}%`}
-                      lift={result.conversionRateLift ?? null}
-                    />
-                  </tbody>
-                </table>
-              </s-stack>
-            </s-box>
-
-            {/* Revenue panel — only show when revenue data exists */}
-            {(result.controlRevenue > 0 || result.treatmentRevenue > 0) && (
+            {/* Hero row */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              {/* P2B card */}
               <s-box padding="base" borderWidth="base" borderRadius="base">
                 <s-stack direction="block" gap="small">
-                  <s-heading>Revenue</s-heading>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Metric</th>
-                        <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Control</th>
-                        <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Treatment</th>
-                        <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5" }}>Lift</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <MetricRow
-                        label="Revenue per visitor"
-                        control={`$${(result.controlRevPerVisitor ?? 0).toFixed(2)}`}
-                        treatment={`$${(result.treatmentRevPerVisitor ?? 0).toFixed(2)}`}
-                        lift={result.revPerVisitorLift ?? null}
-                      />
-                      {result.controlAov != null && (
-                        <MetricRow
-                          label="Avg order value"
-                          control={`$${result.controlAov.toFixed(2)}`}
-                          treatment={`$${(result.treatmentAov ?? 0).toFixed(2)}`}
-                          lift={result.aovLift ?? null}
-                        />
-                      )}
-                      <MetricRow
-                        label="Total revenue"
-                        control={`$${result.controlRevenue.toFixed(0)}`}
-                        treatment={`$${result.treatmentRevenue.toFixed(0)}`}
-                        lift={null}
-                      />
-                    </tbody>
-                  </table>
+                  <s-text tone="neutral">Prob. to Beat Control</s-text>
+                  <p style={{
+                    margin: 0,
+                    fontSize: 20,
+                    fontWeight: 600,
+                    color:
+                      (result.probToBeatControl ?? 0) >= 0.95 ? "#1a7a4a" :
+                      (result.probToBeatControl ?? 0) >= 0.70 ? "#7d5200" : undefined,
+                  }}>
+                    {result.probToBeatControl != null
+                      ? `${(result.probToBeatControl * 100).toFixed(1)}%`
+                      : "—"}
+                  </p>
+                  <s-text tone="neutral">need 95% to auto-conclude</s-text>
                 </s-stack>
               </s-box>
-            )}
+
+              {/* Monthly impact card — only when revenue data exists */}
+              {monthlyImpact != null ? (
+                <s-box padding="base" borderWidth="base" borderRadius="base">
+                  <s-stack direction="block" gap="small">
+                    <s-text tone="neutral">Est. Monthly Impact</s-text>
+                    <p style={{ margin: 0, fontSize: 20, fontWeight: 600, color: monthlyImpact >= 0 ? "#1a7a4a" : "#d72c0d" }}>
+                      {monthlyImpact >= 0
+                        ? `+$${Math.round(monthlyImpact).toLocaleString()} uplift`
+                        : `-$${Math.round(Math.abs(monthlyImpact)).toLocaleString()} at risk`}
+                    </p>
+                    <s-text tone="neutral">at current RPV lift rate</s-text>
+                  </s-stack>
+                </s-box>
+              ) : (
+                <s-box padding="base" borderWidth="base" borderRadius="base">
+                  <s-stack direction="block" gap="small">
+                    <s-text tone="neutral">Est. Monthly Impact</s-text>
+                    <s-text tone="neutral">No revenue data yet</s-text>
+                  </s-stack>
+                </s-box>
+              )}
+
+              {/* Visitors card */}
+              <s-box padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small">
+                  <s-text tone="neutral">Visitors</s-text>
+                  <p style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>
+                    {result.controlVisitors.toLocaleString()} / {result.treatmentVisitors.toLocaleString()}
+                  </p>
+                  <s-text tone="neutral">control / treatment</s-text>
+                </s-stack>
+              </s-box>
+            </div>
+
+            {/* Funnel metrics table */}
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e1e3e5", color: "#6d7175", fontWeight: 500 }}>Metric</th>
+                    <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5", color: "#6d7175", fontWeight: 500 }}>Control</th>
+                    <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5", color: "#6d7175", fontWeight: 500 }}>Treatment</th>
+                    <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5", color: "#6d7175", fontWeight: 500 }}>Lift</th>
+                    <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e1e3e5", color: "#6d7175", fontWeight: 500 }}>P-value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.controlAddToCartRate != null && (
+                    <tr>
+                      <td style={{ padding: "4px 8px" }}>Add to cart</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{(result.controlAddToCartRate * 100).toFixed(2)}%</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{((result.treatmentAddToCartRate ?? 0) * 100).toFixed(2)}%</td>
+                      <LiftCell lift={result.addToCartRateLift ?? null} />
+                      <PValueBadge p={result.addToCartPValue} />
+                    </tr>
+                  )}
+                  {result.controlCheckoutRate != null && (
+                    <tr>
+                      <td style={{ padding: "4px 8px" }}>Checkout rate</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{(result.controlCheckoutRate * 100).toFixed(2)}%</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{((result.treatmentCheckoutRate ?? 0) * 100).toFixed(2)}%</td>
+                      <LiftCell lift={result.checkoutRateLift ?? null} />
+                      <PValueBadge p={result.checkoutPValue} />
+                    </tr>
+                  )}
+                  <tr>
+                    <td style={{ padding: "4px 8px" }}>Conversion rate</td>
+                    <td style={{ textAlign: "right", padding: "4px 8px" }}>{(result.controlConversionRate * 100).toFixed(2)}%</td>
+                    <td style={{ textAlign: "right", padding: "4px 8px" }}>{(result.treatmentConversionRate * 100).toFixed(2)}%</td>
+                    <LiftCell lift={result.conversionRateLift ?? null} />
+                    <PValueBadge p={result.convRatePValue} />
+                  </tr>
+                  {result.controlAov != null && (
+                    <tr>
+                      <td style={{ padding: "4px 8px" }}>AOV</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>${result.controlAov.toFixed(2)}</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>${(result.treatmentAov ?? 0).toFixed(2)}</td>
+                      <LiftCell lift={result.aovLift ?? null} />
+                      <PValueBadge p={result.aovPValue} />
+                    </tr>
+                  )}
+                  {result.controlRevPerVisitor != null && (
+                    <tr style={{ fontWeight: 600 }}>
+                      <td style={{ padding: "4px 8px" }}>Rev / visitor</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>${(result.controlRevPerVisitor ?? 0).toFixed(2)}</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>${(result.treatmentRevPerVisitor ?? 0).toFixed(2)}</td>
+                      <LiftCell lift={result.revPerVisitorLift ?? null} />
+                      <PValueBadge p={result.revPerVisitorPValue} />
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </s-box>
           </s-stack>
         ) : (
           <s-paragraph>
