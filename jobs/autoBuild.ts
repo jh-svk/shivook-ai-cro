@@ -793,7 +793,11 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     }
   } catch (err) {
     // Never block a build on the validator infra itself failing.
-    console.warn(`[autoBuild] render validation skipped for ${hypothesisId}:`, err);
+    console.warn("[autoBuild] render validator skipped — storefront fetch failed", {
+      shopId,
+      hypothesisId,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   // Strip em/en-dashes from generated copy (a clear AI tell). Replace " — "
