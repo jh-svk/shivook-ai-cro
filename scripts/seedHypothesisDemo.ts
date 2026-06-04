@@ -23,6 +23,7 @@
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { runHypothesisGenerator } from "../jobs/hypothesisGenerator";
+import { processResultRefresh } from "../jobs/resultRefresh";
 
 dotenv.config({ override: true });
 
@@ -96,13 +97,41 @@ users, and clearer hero value props for cold email/social audiences. Keep every
 change front-end only (copy, layout, trust signals, hierarchy).`;
 
 // ── Historical traffic so the 3-arm gate (>=450 views/arm/day) opens ─────────
-// One concluded experiment per page type, with view events spread over 14 days.
-const TRAFFIC_PAGES: { pageType: string; viewsPerDay: number }[] = [
-  { pageType: "product", viewsPerDay: 700 },   // -> 3 arms
-  { pageType: "homepage", viewsPerDay: 650 },  // -> 3 arms
-  { pageType: "cart", viewsPerDay: 520 },      // -> 3 arms
-  { pageType: "collection", viewsPerDay: 300 },// -> 2 arms (intentionally lower)
+// One completed control-vs-treatment test per page type, with a real funnel so
+// it DISPLAYS proper numbers (visitors, conversion, lift) — and enough page
+// views to open the A/B/n traffic gate. Total views per page = 2 × viewsPerArm.
+type TrafficPage = {
+  pageType: string; name: string; viewsPerArm: number; atcRate: number; lift: number; aov: number;
+};
+const TRAFFIC_PAGES: TrafficPage[] = [
+  { pageType: "product",   name: "Trust Badges Above Buy Box",   viewsPerArm: 4900, atcRate: 0.11, lift: 0.18, aov: 72 }, // 9.8k views -> 3 arms
+  { pageType: "homepage",  name: "Hero Value-Prop Strip",        viewsPerArm: 4550, atcRate: 0.08, lift: 0.06, aov: 68 }, // 9.1k -> 3 arms
+  { pageType: "cart",      name: "Free-Shipping Progress Bar",   viewsPerArm: 3640, atcRate: 0.12, lift: 0.10, aov: 65 }, // 7.3k -> 3 arms
+  { pageType: "collection",name: "Collection Grid Hierarchy",    viewsPerArm: 2100, atcRate: 0.09, lift: 0.04, aov: 70 }, // 4.2k -> 2 arms
 ];
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Build a monotonic funnel (purchasers ⊆ checkouts ⊆ atc ⊆ viewers) for one arm.
+function funnelEvents(
+  experimentId: string, variantId: string, prefix: string,
+  views: number, atcRate: number, aov: number, startMs: number, endMs: number,
+) {
+  const at = () => new Date(startMs + Math.random() * (endMs - startMs));
+  const atc = Math.round(views * atcRate);
+  const checkout = Math.round(atc * 0.55);
+  const purchases = Math.round(checkout * 0.62);
+  const rows: { experimentId: string; variantId: string; visitorId: string; sessionId: string; eventType: string; revenue?: number | null; checkoutToken?: string | null; occurredAt: Date }[] = [];
+  const push = (i: number, eventType: string, extra: Partial<{ revenue: number; checkoutToken: string }> = {}) => {
+    const vid = `${prefix}_${i}`;
+    rows.push({ experimentId, variantId, visitorId: vid, sessionId: `${vid}_s`, eventType, occurredAt: at(), ...extra });
+  };
+  for (let i = 0; i < views; i++) push(i, "view");
+  for (let i = 0; i < atc; i++) push(i, "add_to_cart");
+  for (let i = 0; i < checkout; i++) push(i, "checkout_started", { checkoutToken: `ck_${prefix}_${i}` });
+  for (let i = 0; i < purchases; i++) push(i, "purchase", { revenue: round2(aov + (Math.random() * 20 - 10)), checkoutToken: `ck_${prefix}_${i}` });
+  return rows;
+}
 
 async function cleanSeed(shopId: string) {
   const exps = await prisma.experiment.findMany({
@@ -113,6 +142,7 @@ async function cleanSeed(shopId: string) {
     await prisma.event.deleteMany({ where: { experimentId: { in: ids } } });
     await prisma.variantResult.deleteMany({ where: { experimentId: { in: ids } } }).catch(() => {});
     await prisma.result.deleteMany({ where: { experimentId: { in: ids } } });
+    await prisma.knowledgeBase.deleteMany({ where: { experimentId: { in: ids } } }).catch(() => {});
     await prisma.variant.deleteMany({ where: { experimentId: { in: ids } } });
     await prisma.experiment.deleteMany({ where: { id: { in: ids } } });
   }
@@ -121,53 +151,81 @@ async function cleanSeed(shopId: string) {
 
 async function seedTraffic(shopId: string) {
   const now = Date.now();
+  // Keep all events inside the traffic gate's 14-day lookback so the per-day view
+  // counts stay above the 3-arm threshold (>=450/arm/day).
+  const startMs = now - 14 * DAY;
+  const endMs = now;
   let total = 0;
   for (const tp of TRAFFIC_PAGES) {
+    // Started long enough ago that the real engine will conclude a clear winner.
     const exp = await prisma.experiment.create({
       data: {
-        shopId, name: `${DATA_PREFIX}Historical traffic (${tp.pageType})`,
-        hypothesis: "Seed traffic so the A/B/n traffic gate can evaluate this page type.",
-        pageType: tp.pageType, elementType: "other", targetMetric: "add_to_cart_rate",
-        status: "concluded", trafficSplit: 0.5,
-        startedAt: new Date(now - 21 * DAY), concludedAt: new Date(now - 1 * DAY),
-        variants: { create: [{ type: "control", name: "Control", description: "Seed" }] },
+        shopId, name: `${DATA_PREFIX}${tp.name} (${tp.pageType})`,
+        hypothesis: `A/B test on the ${tp.pageType} page (seed data — provides historical traffic + a completed result).`,
+        pageType: tp.pageType, elementType: "cta", targetMetric: "add_to_cart_rate",
+        status: "active", trafficSplit: 0.5, minRuntimeDays: 7,
+        startedAt: new Date(startMs),
+        variants: {
+          create: [
+            { type: "control", name: "Control", description: "Existing experience" },
+            { type: "treatment", name: "Treatment", description: tp.name },
+          ],
+        },
       },
       include: { variants: true },
     });
-    const variantId = exp.variants[0].id;
-    const totalViews = tp.viewsPerDay * 14;
-    const rows: { experimentId: string; variantId: string; visitorId: string; sessionId: string; eventType: string; occurredAt: Date }[] = [];
-    for (let i = 0; i < totalViews; i++) {
-      const occurredAt = new Date(now - Math.random() * 14 * DAY);
-      const vid = `${tp.pageType}_v${i}`;
-      rows.push({ experimentId: exp.id, variantId, visitorId: vid, sessionId: `${vid}_s`, eventType: "view", occurredAt });
-    }
+    const control = exp.variants.find((v) => v.type === "control")!.id;
+    const treatment = exp.variants.find((v) => v.type === "treatment")!.id;
+
+    const rows = [
+      ...funnelEvents(exp.id, control, `${tp.pageType}c`, tp.viewsPerArm, tp.atcRate, tp.aov, startMs, endMs),
+      ...funnelEvents(exp.id, treatment, `${tp.pageType}t`, tp.viewsPerArm, tp.atcRate * (1 + tp.lift), tp.aov, startMs, endMs),
+    ];
     for (let i = 0; i < rows.length; i += 2000) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await prisma.event.createMany({ data: rows.slice(i, i + 2000) as any });
     }
+
+    // Compute the real Result via the actual engine, then mark concluded so it
+    // reads as a finished historical test (refresh won't run on a concluded row).
+    await processResultRefresh(exp.id);
+    await prisma.experiment.update({
+      where: { id: exp.id },
+      data: { status: "concluded", concludedAt: new Date(now) },
+    });
+
     total += rows.length;
-    console.log(`  ${tp.pageType.padEnd(11)} ${rows.length.toLocaleString()} views  (~${tp.viewsPerDay}/day)`);
+    const r = await prisma.result.findUnique({ where: { experimentId: exp.id } });
+    console.log(
+      `  ${tp.pageType.padEnd(11)} ${rows.length.toLocaleString()} events  ` +
+      `visitors ${r?.controlVisitors}/${r?.treatmentVisitors}  ` +
+      `conv ${(100 * (r?.controlConversionRate ?? 0)).toFixed(1)}%/${(100 * (r?.treatmentConversionRate ?? 0)).toFixed(1)}%`,
+    );
   }
   return total;
 }
 
 async function main() {
   const cleanOnly = process.argv.includes("--clean");
+  const trafficOnly = process.argv.includes("--traffic-only"); // re-seed traffic + results, keep existing hypotheses
   const shop = await prisma.shop.findFirst({ where: { shopifyDomain: { contains: "shivook" } } });
   if (!shop) throw new Error("Dev shop (shivook-*) not found");
   console.log(`Shop: ${shop.shopifyDomain} (${shop.id})`);
 
-  console.log("Cleaning previous seed…");
+  console.log("Cleaning previous seed traffic…");
   await cleanSeed(shop.id);
   if (cleanOnly) { console.log("✅ Seed cleaned."); return; }
 
-  console.log("Writing rich dataSnapshot (geo + traffic sources)…");
-  await prisma.shop.update({ where: { id: shop.id }, data: { dataSnapshot: DATA_SNAPSHOT as object } });
+  if (!trafficOnly) {
+    console.log("Writing rich dataSnapshot (geo + traffic sources)…");
+    await prisma.shop.update({ where: { id: shop.id }, data: { dataSnapshot: DATA_SNAPSHOT as object } });
+  }
 
-  console.log("Seeding historical traffic so the 3-arm gate opens…");
+  console.log("Seeding completed historical tests (real funnels + results)…");
   const totalViews = await seedTraffic(shop.id);
-  console.log(`  ${totalViews.toLocaleString()} view events total`);
+  console.log(`  ${totalViews.toLocaleString()} events total`);
+
+  if (trafficOnly) { console.log("\n✅ Traffic + results reseeded (hypotheses untouched)."); return; }
 
   console.log("Creating research report…");
   const report = await prisma.researchReport.create({
