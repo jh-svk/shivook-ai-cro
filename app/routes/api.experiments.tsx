@@ -90,8 +90,41 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           },
         });
 
+    // Published winners — permanent changes served to 100% of MATCHING visitors
+    // (no A/B split, no events). These are the "Publish Win Live" results.
+    const publishedRaw = await prisma.experiment.findMany({
+      where: { shopId: shop.id, status: "published", OR: [{ pageType }, { pageType: "any" }] },
+      select: {
+        id: true,
+        pageType: true,
+        winningVariantId: true,
+        segment: {
+          select: {
+            deviceType: true,
+            geoCountry: true,
+            trafficSource: true,
+            visitorType: true,
+            timeOfDayFrom: true,
+            timeOfDayTo: true,
+            dayOfWeek: true,
+            productCategory: true,
+            cartState: true,
+          },
+        },
+        variants: { select: { id: true, htmlPatch: true, cssPatch: true, jsPatch: true } },
+      },
+    });
+    const publishedWins = publishedRaw
+      .map((e) => {
+        const v = e.variants.find((x) => x.id === e.winningVariantId);
+        return v
+          ? { id: e.id, pageType: e.pageType, segment: e.segment, htmlPatch: v.htmlPatch, cssPatch: v.cssPatch, jsPatch: v.jsPatch }
+          : null;
+      })
+      .filter(Boolean);
+
     return Response.json(
-      { experiments, allActive },
+      { experiments, allActive, publishedWins },
       {
         headers: {
           "Cache-Control": "no-store",
