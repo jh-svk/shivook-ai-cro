@@ -14,6 +14,7 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   active: "success",
   paused: "warning",
   concluded: "neutral",
+  published: "success",
   pending_approval: "warning",
 };
 
@@ -190,6 +191,41 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       if (error instanceof Response) throw error;
       console.error("[experiments.$id] reject_approval error", error);
       return { error: "Failed to reject experiment." };
+    }
+  }
+
+  // Publish the winning variant live to 100% of matching visitors (served by the
+  // theme extension — instantly reversible, no theme-file edits).
+  if (intent === "publish_win") {
+    try {
+      const exp = await prisma.experiment.findUnique({
+        where: { id: params.id, shopId },
+        include: { variants: { orderBy: { createdAt: "asc" } } },
+      });
+      if (!exp) return { error: "Experiment not found." };
+      const winnerId = exp.winningVariantId ?? exp.variants.find((v) => v.type !== "control")?.id;
+      if (!winnerId) return { error: "No winning variant to publish." };
+      await prisma.experiment.update({
+        where: { id: params.id, shopId },
+        data: { status: "published", winningVariantId: winnerId },
+      });
+      return { success: true };
+    } catch (error) {
+      console.error("[experiments.$id] publish_win error", error);
+      return { error: "Failed to publish the winner. Please try again." };
+    }
+  }
+
+  if (intent === "unpublish_win") {
+    try {
+      await prisma.experiment.update({
+        where: { id: params.id, shopId },
+        data: { status: "concluded" },
+      });
+      return { success: true };
+    } catch (error) {
+      console.error("[experiments.$id] unpublish_win error", error);
+      return { error: "Failed to unpublish. Please try again." };
     }
   }
 
@@ -388,18 +424,46 @@ export default function ExperimentDetail() {
         );
       })()}
 
-      {/* Ship the winner — shown when experiment concluded with a winner */}
-      {experiment.status === "concluded" &&
-        (experiment.result?.probToBeatControl ?? 0) >= 0.95 && (() => {
+      {/* Ship the winner — shown when concluded with a winner, or already published */}
+      {((experiment.status === "concluded" && (experiment.result?.probToBeatControl ?? 0) >= 0.95) ||
+        experiment.status === "published") && (() => {
           const treatment = winningVariant ?? treatments[0];
           if (!treatment) return null;
+          const isPublished = experiment.status === "published";
           return (
             <s-section heading="Ship the winner">
               <s-stack direction="block" gap="base">
-                <s-paragraph>
-                  {treatment.name} won with {((experiment.result!.probToBeatControl ?? 0) * 100).toFixed(1)}% probability to beat control.
-                  To make this permanent, paste the code below into your theme.
-                </s-paragraph>
+                {isPublished ? (
+                  <>
+                    <s-banner tone="success" heading="This winner is live on your store">
+                      <s-paragraph>
+                        {treatment.name} is being served to 100% of {experiment.segment ? "matching " : ""}visitors through the Shivook theme extension. You can take it down anytime — no theme files were changed.
+                      </s-paragraph>
+                    </s-banner>
+                    <Form method="post">
+                      <input type="hidden" name="intent" value="unpublish_win" />
+                      <s-button type="submit" variant="secondary" tone="critical" {...(isSubmitting ? { loading: true } : {})}>
+                        Unpublish (take it down)
+                      </s-button>
+                    </Form>
+                  </>
+                ) : (
+                  <>
+                    <s-paragraph>
+                      {treatment.name} won with {((experiment.result!.probToBeatControl ?? 0) * 100).toFixed(1)}% probability to beat control. Publish it to serve this version to 100% of {experiment.segment ? "matching " : "your "}visitors — applied instantly through the theme extension, and reversible with one click.
+                    </s-paragraph>
+                    <Form method="post">
+                      <input type="hidden" name="intent" value="publish_win" />
+                      <s-button type="submit" variant="primary" {...(isSubmitting ? { loading: true } : {})}>
+                        Publish Win Live
+                      </s-button>
+                    </Form>
+                  </>
+                )}
+
+                <s-text tone="neutral">
+                  Prefer to hard-code it into your theme instead? Copy the winning variant&apos;s code:
+                </s-text>
                 {treatment.htmlPatch && (
                   <s-stack direction="block" gap="small">
                     <s-stack direction="inline" gap="base">

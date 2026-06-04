@@ -15,6 +15,7 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   active: "success",
   paused: "warning",
   concluded: "neutral",
+  published: "success",
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -261,6 +262,33 @@ export default function ExperimentsIndex() {
   const allSelected = deletableIds.length > 0 && selected.size === deletableIds.length;
   const someSelected = selected.size > 0 && !allSelected;
 
+  // A "winner" = the engine crowned a treatment, or the result is significant
+  // with positive lift.
+  const isWinner = (exp: (typeof experiments)[number]) =>
+    Boolean(exp.winningVariantId) ||
+    Boolean(exp.result?.isSignificant && (exp.result?.relativeLift ?? 0) > 0);
+
+  // ── Aggregate performance across every experiment that has data ─────────────
+  const withData = experiments.filter((e) => e.result);
+  // A test is "decided" once it has concluded or been published (a final verdict).
+  const decided = experiments.filter((e) => (e.status === "concluded" || e.status === "published") && e.result);
+  const winners = experiments.filter(isWinner);
+  const totalVisitors = withData.reduce(
+    (s, e) => s + (e.result!.controlVisitors + e.result!.treatmentVisitors), 0);
+  const liftVals = decided.map((e) => e.result!.relativeLift).filter((v): v is number => v != null);
+  const avgLift = liftVals.length ? liftVals.reduce((s, v) => s + v, 0) / liftVals.length : null;
+  const winnerLifts = winners.map((e) => e.result?.relativeLift).filter((v): v is number => v != null);
+  const avgWinnerLift = winnerLifts.length ? winnerLifts.reduce((s, v) => s + v, 0) / winnerLifts.length : null;
+  // Est. monthly revenue impact from winners: extra rev-per-visitor × visitors, ×30/runtime is noisy,
+  // so report the realised delta across the winners' measured traffic instead.
+  const realisedImpact = winners.reduce((s, e) => {
+    const r = e.result!;
+    const ctrlRpv = r.controlRevPerVisitor ?? 0;
+    const trtRpv = r.treatmentRevPerVisitor ?? 0;
+    return s + (trtRpv - ctrlRpv) * r.treatmentVisitors;
+  }, 0);
+  const winRate = decided.length ? Math.round((decided.filter(isWinner).length / decided.length) * 100) : null;
+
   return (
     <s-page heading="A/B Experiments">
       <s-button
@@ -347,6 +375,56 @@ export default function ExperimentsIndex() {
         </s-section>
       )}
 
+      {withData.length > 0 && (
+        <s-section heading="Performance summary">
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small">
+                <s-text tone="neutral">Tests with data</s-text>
+                <p style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>{withData.length}</p>
+                <s-text tone="neutral">{decided.length} concluded</s-text>
+              </s-stack>
+            </s-box>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small">
+                <s-text tone="neutral">Winners</s-text>
+                <p style={{ margin: 0, fontSize: 22, fontWeight: 600, color: "#1a7a4a" }}>
+                  🏆 {winners.length}
+                </p>
+                <s-text tone="neutral">{winRate != null ? `${winRate}% win rate` : "—"}</s-text>
+              </s-stack>
+            </s-box>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small">
+                <s-text tone="neutral">Visitors tested</s-text>
+                <p style={{ margin: 0, fontSize: 22, fontWeight: 600 }}>{totalVisitors.toLocaleString()}</p>
+                <s-text tone="neutral">across all tests</s-text>
+              </s-stack>
+            </s-box>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small">
+                <s-text tone="neutral">Avg winning lift</s-text>
+                <p style={{ margin: 0, fontSize: 22, fontWeight: 600, color: (avgWinnerLift ?? 0) > 0 ? "#1a7a4a" : undefined }}>
+                  {avgWinnerLift != null ? `+${(avgWinnerLift * 100).toFixed(1)}%` : "—"}
+                </p>
+                <s-text tone="neutral">{avgLift != null ? `${(avgLift * 100).toFixed(1)}% across all` : "conversion rate"}</s-text>
+              </s-stack>
+            </s-box>
+            {realisedImpact > 0 && (
+              <s-box padding="base" borderWidth="base" borderRadius="base">
+                <s-stack direction="block" gap="small">
+                  <s-text tone="neutral">Revenue impact</s-text>
+                  <p style={{ margin: 0, fontSize: 22, fontWeight: 600, color: "#1a7a4a" }}>
+                    +${Math.round(realisedImpact).toLocaleString()}
+                  </p>
+                  <s-text tone="neutral">from winners, measured</s-text>
+                </s-stack>
+              </s-box>
+            )}
+          </div>
+        </s-section>
+      )}
+
       {experiments.length === 0 ? (
         <s-section heading="No experiments yet">
           <s-paragraph>
@@ -427,6 +505,7 @@ export default function ExperimentsIndex() {
             <s-table-body>
               {experiments.filter(matchesFilter).map((exp) => {
                 const isDeletable = true;
+                const won = isWinner(exp);
                 return (
                   <s-table-row key={exp.id}>
                     <s-table-cell>
@@ -440,9 +519,12 @@ export default function ExperimentsIndex() {
                       )}
                     </s-table-cell>
                     <s-table-cell>
-                      <s-link href={`/app/experiments/${exp.id}`}>
-                        {exp.name}
-                      </s-link>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <s-link href={`/app/experiments/${exp.id}`}>
+                          {exp.name}
+                        </s-link>
+                        {won && <s-badge tone="success">🏆 Winner</s-badge>}
+                      </span>
                     </s-table-cell>
                     <s-table-cell>
                       <s-badge tone={STATUS_TONE[exp.status] ?? "info"}>
@@ -484,9 +566,14 @@ export default function ExperimentsIndex() {
                         : "—"}
                     </s-table-cell>
                     <s-table-cell>
-                      {exp.result?.relativeLift != null
-                        ? `${(exp.result.relativeLift * 100).toFixed(1)}%`
-                        : "—"}
+                      {exp.result?.relativeLift != null ? (
+                        <span style={{
+                          fontWeight: won ? 600 : 400,
+                          color: exp.result.relativeLift > 0 ? "#1a7a4a" : exp.result.relativeLift < 0 ? "#d72c0d" : undefined,
+                        }}>
+                          {exp.result.relativeLift > 0 ? "+" : ""}{(exp.result.relativeLift * 100).toFixed(1)}%
+                        </span>
+                      ) : "—"}
                     </s-table-cell>
                     <s-table-cell>
                       {previewUrls[exp.id]?.control || previewUrls[exp.id]?.treatment ? (

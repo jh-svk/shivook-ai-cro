@@ -418,6 +418,20 @@
       var pageExps  = data.experiments;                                   // current page, with variants
       var allActive = Array.isArray(data.allActive) ? data.allActive : null;
 
+      // Published winners — permanent changes served to 100% of MATCHING
+      // visitors. Applied independently of the A/B enrollment below (these are
+      // live site changes, not tests): no assignment, no events, and wrapped in
+      // try/catch so a published win can never break the page or the test logic.
+      var wins = Array.isArray(data.publishedWins) ? data.publishedWins : [];
+      for (var w = 0; w < wins.length; w++) {
+        try {
+          var win = wins[w];
+          if (!matchesSegment(win.segment, ctx)) continue;
+          applyPatch(win.htmlPatch, win.cssPatch, win.jsPatch, 'pub_' + win.id);
+          startMutationObserver(win.htmlPatch, win.cssPatch, win.jsPatch, 'pub_' + win.id);
+        } catch (e) { /* never break the page */ }
+      }
+
       // Mutual exclusion: a visitor is enrolled in AT MOST ONE experiment they
       // match (by segment), and stays in it for its lifetime. Two experiments
       // only "overlap" when a single visitor matches both — so this guarantees
