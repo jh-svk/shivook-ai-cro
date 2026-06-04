@@ -207,7 +207,8 @@ Rules:
   devices/visitor types. Do NOT cluster everything on one segment. Concretely: cover multiple
   page types (product, collection, cart, homepage) AND vary the device (${JSON.stringify(avail.deviceTypes)})
   and visitor type (${JSON.stringify(avail.visitorTypes)}, or null) across the set. Aim to touch every
-  page type at least once and both device types at least once before repeating a page type.
+  page type at least once and both device types at least once before repeating a page type.${(avail.geoCountries.length || avail.trafficSources.length) ? `
+- USE THE GEO + TRAFFIC-SOURCE DATA: since this store HAS ${avail.geoCountries.length ? "geo" : ""}${avail.geoCountries.length && avail.trafficSources.length ? " and " : ""}${avail.trafficSources.length ? "traffic-source" : ""} data, make SOME hypotheses target a specific country (from ${JSON.stringify(avail.geoCountries)}) and SOME target a specific traffic source (from ${JSON.stringify(avail.trafficSources)}), so the set genuinely spans all five dimensions (page type, device, visitor type, geo, traffic source). At least 2-3 hypotheses should combine 3+ dimensions (e.g. mobile + US + paid on a product page).` : ""}
 - These (pageType + segment) combinations ALREADY exist in the backlog — DO NOT generate any hypothesis for these:
 ${coveredCombos.length ? coveredCombos.map((c) => "  - " + c).join("\n") : "  (none yet)"}
 
@@ -225,7 +226,7 @@ Return a JSON array. Each object must have these exact keys:
 - iceConfidence: integer 1-10
 - iceEase: integer 1-10
 - reasoning: string (1-2 sentences explaining the ICE scores)
-- recommendedSegment: { deviceType: REQUIRED one of ${JSON.stringify(avail.deviceTypes)}, geoCountry: string[], trafficSource: null, visitorType: one of ${JSON.stringify(avail.visitorTypes)} or null } — NEVER null, always a specific segment
+- recommendedSegment: { deviceType: REQUIRED one of ${JSON.stringify(avail.deviceTypes)}, geoCountry: ${avail.geoCountries.length ? "[] or a subset of " + JSON.stringify(avail.geoCountries) : "[]"}, trafficSource: ${avail.trafficSources.length ? "one of " + JSON.stringify(avail.trafficSources) + " or null" : "null"}, visitorType: one of ${JSON.stringify(avail.visitorTypes)} or null } — NEVER null, always a specific segment
 
 Return ONLY the JSON array, no other text.`;
 }
