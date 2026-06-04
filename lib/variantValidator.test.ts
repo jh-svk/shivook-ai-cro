@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateVariantAgainstHtml } from "./variantValidator.server";
+import { validateVariantAgainstHtml, detectHiddenTarget } from "./variantValidator.server";
 
 const PRODUCT_HTML = `<!doctype html><html><body>
   <main>
@@ -62,5 +62,39 @@ describe("validateVariantAgainstHtml", () => {
   it("unwraps a <script>-wrapped jsPatch and still validates the inner code", () => {
     const js = `<script>(function(){var h=document.querySelector('.product__title');var p=document.createElement('p');p.textContent='Hi';h.parentNode.appendChild(p);})();</script>`;
     expect(validateVariantAgainstHtml({ htmlPatch: null, cssPatch: null, jsPatch: js, pageType: "product", pageHtml: PRODUCT_HTML }).ok).toBe(true);
+  });
+});
+
+describe("detectHiddenTarget (hover-only Quick Add no-op)", () => {
+  // Regression: the exact pattern of the wasted "High-Contrast ATC Button on
+  // Collection Mobile" test — mobile-gated JS restyling hover-only card buttons.
+  const wastedJs = `(function(){ if (window.innerWidth > 749) return;
+    document.querySelectorAll('.card__footer button.button, [class*="card"] button.button').forEach(function(b){ b.style.minHeight='52px'; });
+  })();`;
+
+  it("flags a mobile-gated collection variant targeting card__footer Quick-Add buttons", () => {
+    const r = detectHiddenTarget({ jsPatch: wastedJs, htmlPatch: null, pageType: "collection", deviceType: null });
+    expect(r).not.toBeNull();
+    expect(r).toMatch(/hover-only/i);
+  });
+
+  it("flags when the segment device is mobile even without an innerWidth gate", () => {
+    const js = `document.querySelectorAll('.quick-add__submit').forEach(function(b){ b.style.background='red'; });`;
+    expect(detectHiddenTarget({ jsPatch: js, htmlPatch: null, pageType: "collection", deviceType: "mobile" })).not.toBeNull();
+  });
+
+  it("does NOT flag a desktop collection variant (hover works on desktop)", () => {
+    // No mobile gate + desktop segment → hover reveals Quick Add, so it's a real change.
+    const desktopJs = `document.querySelectorAll('.quick-add__submit').forEach(function(b){ b.style.background='red'; });`;
+    expect(detectHiddenTarget({ jsPatch: desktopJs, htmlPatch: null, pageType: "collection", deviceType: "desktop" })).toBeNull();
+  });
+
+  it("does NOT flag a collection variant targeting always-visible elements", () => {
+    const js = `document.querySelectorAll('.card__heading a, .price').forEach(function(e){ e.style.fontWeight='700'; });`;
+    expect(detectHiddenTarget({ jsPatch: js, htmlPatch: null, pageType: "collection", deviceType: "mobile" })).toBeNull();
+  });
+
+  it("does NOT flag Quick-Add targeting on a product page (out of scope)", () => {
+    expect(detectHiddenTarget({ jsPatch: wastedJs, htmlPatch: null, pageType: "product", deviceType: "mobile" })).toBeNull();
   });
 });
