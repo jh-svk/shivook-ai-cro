@@ -36,6 +36,52 @@ interface ValidatorInput {
   deviceType?: string | null; // "mobile" | "desktop" | "tablet" — sets the shimmed width
 }
 
+// Theme elements that are HIDDEN until hover/focus on desktop and typically not
+// rendered at all on mobile collection cards — the "hover-only Quick Add" class.
+// A layout-less parser (linkedom) still "sees" a DOM mutation when a variant sets
+// an inline style on one of these, so the plain producedChange check passes even
+// though the change is invisible to real shoppers. This is the exact failure that
+// shipped a no-op collection-mobile CTA test.
+const HOVER_ONLY_TOKENS = [
+  "quick-add", "quick_add", "quickadd", "quick-buy", "quickbuy",
+  "card__quick-add", "card-quick-add", "card__footer", "card-footer",
+];
+
+function isMobileGated(js: string): boolean {
+  // innerWidth > 749 / <= 749, matchMedia max-width: 7xx, or an explicit mobile gate.
+  if (/innerWidth\s*[<>]=?\s*7\d\d/.test(js)) return true;
+  if (/max-width:\s*7\d\d/.test(js)) return true;
+  if (/\bmobile\b/i.test(js) && /(matchMedia|innerWidth)/.test(js)) return true;
+  return false;
+}
+
+/**
+ * Detect the "hover-only Quick Add" no-op: a mobile-targeted collection variant
+ * whose only theme targets are elements hidden until hover (desktop) / absent on
+ * mobile cards. Returns a human-readable reason, or null when not applicable.
+ * Conservative by design — scoped to collection pages + a mobile gate so it never
+ * rejects a legitimately-visible target.
+ */
+export function detectHiddenTarget(input: {
+  jsPatch: string | null;
+  htmlPatch: string | null;
+  pageType: string;
+  deviceType?: string | null;
+}): string | null {
+  if (input.pageType !== "collection") return null;
+  const blob = `${input.jsPatch ?? ""}\n${input.htmlPatch ?? ""}`.toLowerCase();
+  const hits = HOVER_ONLY_TOKENS.filter((t) => blob.includes(t));
+  if (hits.length === 0) return null;
+  const mobileGated = input.deviceType === "mobile" || (input.jsPatch ? isMobileGated(input.jsPatch) : false);
+  if (!mobileGated) return null;
+  return (
+    `Variant targets hover-only / Quick-Add elements (${hits.join(", ")}) on a mobile ` +
+    `collection page. These are hidden until hover on desktop and not rendered on mobile ` +
+    `product cards, so the change is invisible to mobile shoppers. Target an always-visible ` +
+    `element instead (product card link, title, price, image, or a badge you add yourself).`
+  );
+}
+
 /**
  * Run the variant against a DOM built from the real page HTML and report whether
  * it produced a change. Pure + synchronous given the HTML (caller fetches it).
@@ -127,6 +173,14 @@ export function validateVariantAgainstHtml(input: ValidatorInput): VariantValida
         "Variant ran but produced no DOM change on the real page — it likely targets an element/relationship that doesn't exist on this theme, or gates its only effect on missing data.",
     };
   }
+
+  // Even when the DOM "changed", a mutation on a hover-only / Quick-Add element is
+  // invisible to real shoppers (linkedom has no layout/hover, so it can't see this).
+  const hidden = detectHiddenTarget({
+    jsPatch, htmlPatch, pageType: input.pageType, deviceType: input.deviceType,
+  });
+  if (hidden) return { ok: false, reason: "hidden_target", detail: hidden };
+
   return { ok: true };
 }
 

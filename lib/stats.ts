@@ -140,6 +140,143 @@ export function computeStats(
   };
 }
 
+// ── Multi-arm (A/B/n) Bayesian engine ────────────────────────────────────────
+
+export interface MultiArmStat {
+  /** Point-estimate conversion rate. */
+  conversionRate: number;
+  /** Relative lift vs control (null on the control row, or when control rate is 0). */
+  relativeLift: number | null;
+  /** Pairwise P(this arm > control). Null on the control row, or in degenerate cases. */
+  probToBeatControl: number | null;
+  /** Joint P(this arm is the best of ALL arms, control included). 0 in degenerate cases. */
+  probBestArm: number;
+  /** 95% credible interval on relative lift vs control (treatments only). */
+  credibleIntervalLower: number | null;
+  credibleIntervalUpper: number | null;
+}
+
+export interface MultiArmResult {
+  /** arms[0] is the control; arms[1..] are the treatments in input order. */
+  arms: MultiArmStat[];
+  /** Index into `arms` of the highest probBestArm (0 = control wins). */
+  bestArmIndex: number;
+  /**
+   * True when some TREATMENT is simultaneously the best arm and beats control,
+   * both at the 95% threshold. This Bayesian joint-probability framing IS the
+   * multiple-comparison correction — do NOT bolt on Bonferroni/Šidák, which
+   * would double-count the penalty already baked into probBestArm.
+   */
+  isSignificant: boolean;
+  /** Index into `arms` of the winning treatment when isSignificant, else null. */
+  winningArmIndex: number | null;
+}
+
+/**
+ * N-arm Beta-Binomial / Monte-Carlo engine. Each iteration draws one posterior
+ * sample per arm at once, so a single pass yields both the pairwise
+ * P(arm > control) and the joint P(arm is best of the field).
+ */
+export function computeMultiArmStats(
+  control: VariantStats,
+  treatments: VariantStats[],
+): MultiArmResult {
+  const all = [control, ...treatments];
+  const rate = (v: VariantStats) => (v.visitors > 0 ? v.conversions / v.visitors : 0);
+  const controlRate = rate(control);
+
+  const degenerate =
+    control.visitors === 0 || treatments.some((t) => t.visitors === 0);
+
+  if (degenerate) {
+    return {
+      arms: all.map((v, i) => ({
+        conversionRate: rate(v),
+        relativeLift:
+          i === 0 || controlRate === 0 ? null : (rate(v) - controlRate) / controlRate,
+        probToBeatControl: null,
+        probBestArm: 0,
+        credibleIntervalLower: null,
+        credibleIntervalUpper: null,
+      })),
+      bestArmIndex: 0,
+      isSignificant: false,
+      winningArmIndex: null,
+    };
+  }
+
+  // Beta posteriors per arm: Beta(1 + conversions, 1 + non-conversions)
+  const alphas = all.map((v) => 1 + v.conversions);
+  const betas = all.map((v) => 1 + (v.visitors - v.conversions));
+
+  const bestWins = new Array(all.length).fill(0);
+  const beatControlWins = new Array(all.length).fill(0);
+  // Per-arm lift samples (index 0 = control, unused).
+  const liftSamples: number[][] = all.map(() => []);
+
+  for (let i = 0; i < SAMPLES; i++) {
+    let bestArm = 0;
+    let bestDraw = -1;
+    const draws = new Array(all.length);
+    for (let a = 0; a < all.length; a++) {
+      const d = sampleBeta(alphas[a], betas[a]);
+      draws[a] = d;
+      if (d > bestDraw) { bestDraw = d; bestArm = a; }
+    }
+    bestWins[bestArm]++;
+
+    const c = draws[0];
+    for (let a = 1; a < all.length; a++) {
+      if (draws[a] > c) beatControlWins[a]++;
+      liftSamples[a].push(c > 0 ? (draws[a] - c) / c : 0);
+    }
+  }
+
+  const lo = Math.floor(0.025 * SAMPLES);
+  const hi = Math.floor(0.975 * SAMPLES);
+
+  const arms: MultiArmStat[] = all.map((v, a) => {
+    if (a === 0) {
+      return {
+        conversionRate: controlRate,
+        relativeLift: null,
+        probToBeatControl: null,
+        probBestArm: bestWins[0] / SAMPLES,
+        credibleIntervalLower: null,
+        credibleIntervalUpper: null,
+      };
+    }
+    const sorted = liftSamples[a].slice().sort((x, y) => x - y);
+    return {
+      conversionRate: rate(v),
+      relativeLift: controlRate > 0 ? (rate(v) - controlRate) / controlRate : null,
+      probToBeatControl: beatControlWins[a] / SAMPLES,
+      probBestArm: bestWins[a] / SAMPLES,
+      credibleIntervalLower: sorted[lo],
+      credibleIntervalUpper: sorted[hi],
+    };
+  });
+
+  // Best arm overall (control included).
+  let bestArmIndex = 0;
+  for (let a = 1; a < arms.length; a++) {
+    if (arms[a].probBestArm > arms[bestArmIndex].probBestArm) bestArmIndex = a;
+  }
+
+  // A treatment wins only if it is BOTH the best arm and beats control at 95%.
+  const winner =
+    bestArmIndex > 0 &&
+    arms[bestArmIndex].probBestArm >= SIGNIFICANCE_THRESHOLD &&
+    (arms[bestArmIndex].probToBeatControl ?? 0) >= SIGNIFICANCE_THRESHOLD;
+
+  return {
+    arms,
+    bestArmIndex,
+    isSignificant: winner,
+    winningArmIndex: winner ? bestArmIndex : null,
+  };
+}
+
 // ── Frequentist p-value helpers (supplementary per-metric signals) ────────────
 
 /** Abramowitz & Stegun normal CDF approximation (error < 7.5e-8). */

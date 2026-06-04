@@ -31,82 +31,86 @@ model Session {
 }
 
 model Shop {
-  id                     String             @id @default(uuid())
-  shopifyDomain          String             @unique
-  accessToken            String
-  maxConcurrentTests     Int                @default(5)
-  requireHumanApproval   Boolean            @default(false)
+  id                    String            @id @default(uuid())
+  shopifyDomain         String            @unique
+  accessToken           String
+  maxConcurrentTests    Int               @default(5)
+  requireHumanApproval  Boolean           @default(false)
   // When true (default), the AI auto-concludes a test once it hits the Bayesian
   // 95% threshold (after min runtime). When false, the merchant decides when to
   // pause/end — the AI only flags significance, never auto-concludes. The AOV
   // guardrail still auto-concludes regardless, as a loss-prevention safety net.
-  autoConcludeEnabled    Boolean            @default(true)
-  brandGuardrails        Json?
-  themeTokens            Json?
-  slackWebhookUrl        String?
-  installedAt            DateTime           @default(now())
-  timezone               String             @default("UTC")
-  onboardingCompletedAt  DateTime?
-  dataSnapshot           Json?
-  experiments            Experiment[]
-  dataSources            DataSource[]
-  researchReports        ResearchReport[]
-  hypotheses             Hypothesis[]
-  knowledgeBase          KnowledgeBase[]
-  segments               Segment[]
-  orchestratorLogs       OrchestratorLog[]
-  subscription           Subscription?
+  autoConcludeEnabled   Boolean           @default(true)
+  brandGuardrails       Json?
+  themeTokens           Json?
+  slackWebhookUrl       String?
+  installedAt           DateTime          @default(now())
+  timezone              String            @default("UTC")
+  onboardingCompletedAt DateTime?
+  dataSnapshot          Json?
+  experiments           Experiment[]
+  dataSources           DataSource[]
+  researchReports       ResearchReport[]
+  hypotheses            Hypothesis[]
+  knowledgeBase         KnowledgeBase[]
+  segments              Segment[]
+  orchestratorLogs      OrchestratorLog[]
+  subscription          Subscription?
 
   @@map("shops")
 }
 
 model Subscription {
-  id                String    @id @default(uuid())
-  shopId            String    @unique
-  shopifyChargeId   String    @unique
-  plan              String    // starter | growth | pro
-  status            String    // active | frozen | cancelled | pending
-  trialEndsAt       DateTime?
-  activatedAt       DateTime?
-  cancelledAt       DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  shop              Shop      @relation(fields: [shopId], references: [id])
+  id              String    @id @default(uuid())
+  shopId          String    @unique
+  shopifyChargeId String    @unique
+  plan            String // starter | growth | pro
+  status          String // active | frozen | cancelled | pending
+  trialEndsAt     DateTime?
+  activatedAt     DateTime?
+  cancelledAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  shop            Shop      @relation(fields: [shopId], references: [id])
 
   @@map("subscriptions")
 }
 
 model Experiment {
-  id             String         @id @default(uuid())
-  shopId         String
-  segmentId      String?
-  name           String
-  hypothesis     String
-  pageType       String
-  elementType    String
-  targetMetric   String
-  status         String         @default("draft")
-  trafficSplit   Float          @default(0.5)
-  minRuntimeDays Int            @default(7)
-  maxRuntimeDays Int            @default(28)
-  startedAt      DateTime?
-  concludedAt    DateTime?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  shop           Shop           @relation(fields: [shopId], references: [id])
-  segment        Segment?       @relation(fields: [segmentId], references: [id])
-  variants       Variant[]
-  events         Event[]
-  result         Result?
-  knowledgeBase  KnowledgeBase?
-  hypotheses     Hypothesis[]
+  id               String          @id @default(uuid())
+  shopId           String
+  segmentId        String?
+  name             String
+  hypothesis       String
+  pageType         String
+  elementType      String
+  targetMetric     String
+  status           String          @default("draft")
+  trafficSplit     Float           @default(0.5)
+  minRuntimeDays   Int             @default(7)
+  maxRuntimeDays   Int             @default(28)
+  // Set on conclusion to the winning treatment arm's id (null = not concluded / inconclusive).
+  // Bare id (no FK relation) to avoid a second relation back to Variant.
+  winningVariantId String?
+  startedAt        DateTime?
+  concludedAt      DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  shop             Shop            @relation(fields: [shopId], references: [id])
+  segment          Segment?        @relation(fields: [segmentId], references: [id])
+  variants         Variant[]
+  events           Event[]
+  result           Result?
+  variantResults   VariantResult[]
+  knowledgeBase    KnowledgeBase?
+  hypotheses       Hypothesis[]
 
   @@index([shopId])
   @@map("experiments")
 }
 
 model Variant {
-  id                   String     @id @default(uuid())
+  id                   String          @id @default(uuid())
   experimentId         String
   type                 String
   name                 String
@@ -115,9 +119,10 @@ model Variant {
   cssPatch             String?
   jsPatch              String?
   themeExtensionHandle String?
-  createdAt            DateTime   @default(now())
-  experiment           Experiment @relation(fields: [experimentId], references: [id])
+  createdAt            DateTime        @default(now())
+  experiment           Experiment      @relation(fields: [experimentId], references: [id])
   events               Event[]
+  variantResults       VariantResult[]
 
   @@map("variants")
 }
@@ -142,22 +147,22 @@ model Event {
 }
 
 model Result {
-  id                      String     @id @default(uuid())
-  experimentId            String     @unique
+  id                      String    @id @default(uuid())
+  experimentId            String    @unique
   computedAt              DateTime
-  controlVisitors         Int        @default(0)
-  treatmentVisitors       Int        @default(0)
-  controlConversions      Int        @default(0)
-  treatmentConversions    Int        @default(0)
-  controlRevenue          Float      @default(0)
-  treatmentRevenue        Float      @default(0)
-  controlConversionRate   Float      @default(0)
-  treatmentConversionRate Float      @default(0)
+  controlVisitors         Int       @default(0)
+  treatmentVisitors       Int       @default(0)
+  controlConversions      Int       @default(0)
+  treatmentConversions    Int       @default(0)
+  controlRevenue          Float     @default(0)
+  treatmentRevenue        Float     @default(0)
+  controlConversionRate   Float     @default(0)
+  treatmentConversionRate Float     @default(0)
   relativeLift            Float?
   pValue                  Float?
   probToBeatControl       Float?
-  isSignificant           Boolean    @default(false)
-  guardrailStatus         String     @default("ok")
+  isSignificant           Boolean   @default(false)
+  guardrailStatus         String    @default("ok")
   decision                String?
   decisionMadeAt          DateTime?
 
@@ -168,23 +173,23 @@ model Result {
   treatmentAddToCartRate  Float?
 
   // Checkout initiated funnel
-  controlCheckoutCount    Int?
-  treatmentCheckoutCount  Int?
-  controlCheckoutRate     Float?
-  treatmentCheckoutRate   Float?
+  controlCheckoutCount   Int?
+  treatmentCheckoutCount Int?
+  controlCheckoutRate    Float?
+  treatmentCheckoutRate  Float?
 
   // Revenue metrics
-  controlAov              Float?
-  treatmentAov            Float?
-  controlRevPerVisitor    Float?
-  treatmentRevPerVisitor  Float?
+  controlAov             Float?
+  treatmentAov           Float?
+  controlRevPerVisitor   Float?
+  treatmentRevPerVisitor Float?
 
   // Lift metrics
-  conversionRateLift      Float?
-  addToCartRateLift       Float?
-  checkoutRateLift        Float?
-  revPerVisitorLift       Float?
-  aovLift                 Float?
+  conversionRateLift Float?
+  addToCartRateLift  Float?
+  checkoutRateLift   Float?
+  revPerVisitorLift  Float?
+  aovLift            Float?
 
   // Per-metric frequentist p-values (two-proportion z-test for rates; Poisson rate test for revenue metrics)
   addToCartPValue     Float?
@@ -193,9 +198,41 @@ model Result {
   aovPValue           Float?
   revPerVisitorPValue Float?
 
-  experiment              Experiment @relation(fields: [experimentId], references: [id])
+  experiment Experiment @relation(fields: [experimentId], references: [id])
 
   @@map("results")
+}
+
+// Per-arm metrics for multi-variant (A/B/n) experiments. One row per variant
+// (including control) per experiment. `Result` remains the experiment-level
+// summary (overall decision, guardrail, winner pointer); this holds the
+// per-arm breakdown so a single experiment can have N treatment arms.
+model VariantResult {
+  id                String     @id @default(uuid())
+  shopId            String // non-negotiable: every table carries shopId
+  experimentId      String
+  variantId         String
+  computedAt        DateTime
+  visitors          Int        @default(0)
+  conversions       Int        @default(0)
+  conversionRate    Float      @default(0)
+  revenue           Float      @default(0)
+  addToCartCount    Int?
+  checkoutCount     Int?
+  purchaseCount     Int?
+  aov               Float?
+  // vs-control comparison (null on the control row itself)
+  relativeLift      Float?
+  probToBeatControl Float? // pairwise P(this arm > control)
+  probBestArm       Float? // joint P(this arm is the best of all arms)
+  guardrailStatus   String     @default("ok") // per-arm AOV guardrail
+  experiment        Experiment @relation(fields: [experimentId], references: [id])
+  variant           Variant    @relation(fields: [variantId], references: [id])
+
+  @@unique([experimentId, variantId])
+  @@index([shopId])
+  @@index([experimentId])
+  @@map("variant_results")
 }
 
 // ── Phase 2 tables ──────────────────────────────────────────────────────────
@@ -203,8 +240,8 @@ model Result {
 model DataSource {
   id           String    @id @default(uuid())
   shopId       String
-  type         String    // ga4 | shopify_admin
-  config       Json      // property IDs, credentials ref, etc.
+  type         String // ga4 | shopify_admin
+  config       Json // property IDs, credentials ref, etc.
   lastSyncedAt DateTime?
   createdAt    DateTime  @default(now())
   shop         Shop      @relation(fields: [shopId], references: [id])
@@ -217,8 +254,8 @@ model ResearchReport {
   id           String       @id @default(uuid())
   shopId       String
   generatedAt  DateTime     @default(now())
-  dataSnapshot Json         // assembled metrics from connectors
-  reportMd     String       // Claude's friction-point analysis (markdown)
+  dataSnapshot Json // assembled metrics from connectors
+  reportMd     String // Claude's friction-point analysis (markdown)
   status       String       @default("pending") // pending | complete | failed
   shop         Shop         @relation(fields: [shopId], references: [id])
   hypotheses   Hypothesis[]
@@ -236,12 +273,12 @@ model Hypothesis {
   pageType             String
   elementType          String
   targetMetric         String
-  iceImpact            Int             // 1-10
-  iceConfidence        Int             // 1-10
-  iceEase              Int             // 1-10
-  iceScore             Float           // impact * confidence * ease
+  iceImpact            Int // 1-10
+  iceConfidence        Int // 1-10
+  iceEase              Int // 1-10
+  iceScore             Float // impact * confidence * ease
   status               String          @default("backlog") // backlog | promoted | rejected | qa_failed
-  recommendedSegment   Json?           // { deviceType, geoCountry, trafficSource, visitorType }
+  recommendedSegment   Json? // { deviceType, geoCountry, trafficSource, visitorType }
   promotedExperimentId String?
   createdAt            DateTime        @default(now())
   shop                 Shop            @relation(fields: [shopId], references: [id])
@@ -298,7 +335,7 @@ model PlatformLearning {
   elementType       String
   targetMetric      String
   hypothesisSummary String
-  result            String   // winner | loser | inconclusive
+  result            String // winner | loser | inconclusive
   relativeLift      Float?
   probToBeatControl Float?
   visitorCount      Int
@@ -312,23 +349,22 @@ model PlatformLearning {
 }
 
 model KnowledgeBase {
-  id                 String     @id @default(uuid())
+  id                 String                       @id @default(uuid())
   shopId             String
-  experimentId       String     @unique
+  experimentId       String                       @unique
   hypothesisText     String
   segmentTargeted    String?
   variantDescription String
-  result             String     // win | loss | inconclusive
+  result             String // win | loss | inconclusive
   liftPercentage     Float?
   pageType           String
   elementType        String
   tags               String[]
   embedding          Unsupported("vector(1536)")?
-  createdAt          DateTime   @default(now())
-  shop               Shop       @relation(fields: [shopId], references: [id])
-  experiment         Experiment @relation(fields: [experimentId], references: [id])
+  createdAt          DateTime                     @default(now())
+  shop               Shop                         @relation(fields: [shopId], references: [id])
+  experiment         Experiment                   @relation(fields: [experimentId], references: [id])
 
   @@index([shopId])
   @@map("knowledge_base")
 }
-

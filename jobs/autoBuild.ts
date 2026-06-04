@@ -475,6 +475,28 @@ JS: ${jsPatch ?? "null"}`,
   }
 }
 
+// ── Multi-variant traffic gate ───────────────────────────────────────────────
+// An A/B/n test splits traffic N ways, so each arm needs enough daily views to
+// reach significance in a reasonable window. We estimate a page type's volume
+// from the last 14 days of `view` events and cap arms accordingly (2 or 3).
+const MIN_VIEWS_PER_ARM_PER_DAY = 150;
+
+export async function maxArmsForTraffic(shopId: string, pageType: string): Promise<number> {
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  const rows = await prisma.$queryRaw<{ cnt: bigint }[]>`
+    SELECT COUNT(*) AS cnt
+    FROM "events" e
+    JOIN "experiments" x ON x."id" = e."experimentId"
+    WHERE x."shopId" = ${shopId}
+      AND x."pageType" = ${pageType}
+      AND e."eventType" = 'view'
+      AND e."occurredAt" >= ${since}
+  `;
+  const dailyViews = Number(rows[0]?.cnt ?? 0) / 14;
+  const arms = Math.floor(dailyViews / MIN_VIEWS_PER_ARM_PER_DAY);
+  return Math.max(2, Math.min(3, arms)); // hard cap at 3
+}
+
 export async function runAutoBuild(shopId: string, hypothesisId: string) {
   const runId = hypothesisId;
 
@@ -811,6 +833,58 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
 
   const { htmlPatch, cssPatch, jsPatch, variantDescription } = patches;
 
+  // ── Optional 2nd treatment (A/B/n) when the page's traffic supports 3 arms ──
+  // Best-effort: a second, meaningfully-different variant goes through the same
+  // QA gauntlet. If it fails anything, we ship a normal 2-arm test — the second
+  // arm never blocks the primary build.
+  let secondTreatment: VariantPatches | null = null;
+  const maxArms = await maxArmsForTraffic(shopId, hypothesis.pageType);
+  if (maxArms >= 3) {
+    try {
+      const resp2 = await client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 8192,
+        system: buildSystemPrompt(),
+        messages: [
+          {
+            role: "user",
+            content:
+              buildUserPrompt(
+                hypothesis.title, hypothesis.hypothesis, hypothesis.pageType,
+                hypothesis.elementType, hypothesis.targetMetric,
+                hypothesis.shop.brandGuardrails, hypothesis.shop.themeTokens,
+              ) +
+              `\n\nIMPORTANT: This is the SECOND variant of an A/B/n test. The FIRST ` +
+              `variant is described as:\n"${variantDescription}"\nProduce a MEANINGFULLY ` +
+              `DIFFERENT approach (different mechanism, layout, or copy angle) that still ` +
+              `tests the same hypothesis — not a minor restyle of the first variant.`,
+          },
+        ],
+      });
+      const raw2 = resp2.content[0];
+      if (raw2.type === "text") {
+        const json2 = raw2.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
+        const p2 = parsePatchesJson<VariantPatches>(json2);
+        extractInlineScripts(p2);
+        const qa2 = qaGate(p2.htmlPatch ?? null, p2.jsPatch ?? null);
+        const sel2 = validateVariantSelectors(p2.jsPatch ?? null, p2.htmlPatch ?? null, selVocab);
+        if (qa2.passed && sel2.ok) {
+          const crit2 = await designCritique(p2.htmlPatch ?? null, p2.cssPatch ?? null, p2.jsPatch ?? null, cssVars, client);
+          if (crit2.passed) {
+            p2.htmlPatch = deDash(p2.htmlPatch ?? null);
+            p2.jsPatch = deDash(p2.jsPatch ?? null);
+            secondTreatment = p2;
+          }
+        }
+      }
+      if (!secondTreatment) {
+        console.log(`[autoBuild] 2nd treatment for ${hypothesisId} failed QA — shipping a 2-arm test`);
+      }
+    } catch (err) {
+      console.error("[autoBuild] 2nd treatment generation error (non-fatal):", err);
+    }
+  }
+
   // Create draft experiment from hypothesis
   const experiment = await prisma.experiment.create({
     data: {
@@ -833,6 +907,16 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
             cssPatch: cssPatch ?? undefined,
             jsPatch: jsPatch ?? undefined,
           },
+          ...(secondTreatment
+            ? [{
+                type: "treatment",
+                name: "Variant C",
+                description: secondTreatment.variantDescription || "AI-generated variant C",
+                htmlPatch: secondTreatment.htmlPatch ?? undefined,
+                cssPatch: secondTreatment.cssPatch ?? undefined,
+                jsPatch: secondTreatment.jsPatch ?? undefined,
+              }]
+            : []),
         ],
       },
     },
@@ -846,7 +930,8 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
   await logOrchestrator(shopId, runId, "BUILD", "complete", {
     hypothesisId,
     experimentId: experiment.id,
-    message: "static QA passed — chaining to qaReview → activationGate",
+    arms: secondTreatment ? 3 : 2,
+    message: `static QA passed (${secondTreatment ? "3-arm A/B/n" : "2-arm"}) — chaining to qaReview → activationGate`,
   });
 
   console.log(`[autoBuild] created experiment ${experiment.id} from hypothesis ${hypothesisId}`);
