@@ -14,6 +14,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { hasPlanFeature } from "../lib/planGate.server";
 import { fetchStorefrontHtml } from "../lib/themeTokenExtractor.server";
 import { validateVariantAgainstHtml } from "../lib/variantValidator.server";
+import { extractPageInventory, pageLacksRequiredElement } from "../lib/pageInventory.server";
 
 interface ThemeTokensShape {
   cssVars?: Record<string, string>;
@@ -198,7 +199,8 @@ function buildUserPrompt(
   elementType: string,
   targetMetric: string,
   brandGuardrails: unknown,
-  themeTokens: unknown
+  themeTokens: unknown,
+  pageInventory?: string | null,
 ): string {
   const guardrails = (brandGuardrails as Record<string, unknown>) ?? {};
   const tokens = themeTokens as ThemeTokensShape | null;
@@ -268,6 +270,16 @@ Targeting rules:
 - If no suitable real selector exists, return null patches instead of guessing.`;
   }
 
+  const inventoryBlock = pageInventory
+    ? `
+
+## What is ACTUALLY on this ${pageType} page — LIVE HTML inventory (ground your idea in this)
+${pageInventory}
+If the element your test needs does not exist on this page, DO NOT invent it —
+return null patches. Never target an add-to-cart/buy control that this inventory
+says is absent or hover-only.`
+    : "";
+
   return `Generate variant patches for this A/B test hypothesis:
 
 Title: ${title}
@@ -276,7 +288,7 @@ Page type: ${pageType}
 Element type: ${elementType}
 Target metric: ${targetMetric}
 
-${constraintsBlock}${domBlock}
+${constraintsBlock}${domBlock}${inventoryBlock}
 
 Return JSON with: htmlPatch, cssPatch, jsPatch, variantDescription.`;
 }
@@ -566,6 +578,45 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
     }
   }
 
+  // ── PREVENTION: fetch the real target page + build an element inventory BEFORE
+  // generating, so the model grounds its idea in what's actually on THIS page
+  // (not just the store-wide selector list). Falls back to store-wide grounding
+  // if the fetch fails — this layer adds to, never replaces, the existing guards.
+  const sampleUrls = (hypothesis.shop.themeTokens as ThemeTokensShape | null)?.sampleUrls;
+  const targetPath =
+    hypothesis.pageType === "product" ? sampleUrls?.product ?? "/"
+    : hypothesis.pageType === "collection" ? sampleUrls?.collection ?? "/"
+    : hypothesis.pageType === "cart" ? "/cart"
+    : "/";
+  let pageHtml: string | null = null;
+  let pageInventory: ReturnType<typeof extractPageInventory> = null;
+  try {
+    pageHtml = await fetchStorefrontHtml(hypothesis.shop.shopifyDomain, targetPath);
+    pageInventory = extractPageInventory(pageHtml, hypothesis.pageType);
+  } catch (err) {
+    console.warn("[autoBuild] page inventory fetch failed — using store-wide grounding only", {
+      hypothesisId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Capability pre-gate: skip generation entirely when the page provably can't
+  // support this test (e.g. a collection-page add-to-cart CTA with no usable buy
+  // button). Cheaper than generate → validate → retry, and stops the idea at the
+  // source — exactly the failure the merchant flagged.
+  if (pageInventory) {
+    const lack = pageLacksRequiredElement(
+      pageInventory, hypothesis.pageType, hypothesis.elementType, hypothesis.targetMetric,
+    );
+    if (lack) {
+      await prisma.hypothesis.update({ where: { id: hypothesisId }, data: { status: "qa_failed" } });
+      await logOrchestrator(shopId, runId, "PAGE_CAPABILITY", "failed", {
+        hypothesisId, reason: lack, pageType: hypothesis.pageType, elementType: hypothesis.elementType,
+      });
+      console.log(`[autoBuild] page-capability gate blocked ${hypothesisId}: ${lack}`);
+      return;
+    }
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
@@ -585,6 +636,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
           hypothesis.targetMetric,
           hypothesis.shop.brandGuardrails,
           hypothesis.shop.themeTokens,
+          pageInventory?.summary ?? null,
         ),
       },
     ],
@@ -754,13 +806,9 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
   // data). Fetch the real target page, run the variant against a lightweight DOM,
   // and retry once if it produced no change.
   try {
-    const sampleUrls = (hypothesis.shop.themeTokens as ThemeTokensShape | null)?.sampleUrls;
-    const targetPath =
-      hypothesis.pageType === "product" ? sampleUrls?.product ?? "/"
-      : hypothesis.pageType === "collection" ? sampleUrls?.collection ?? "/"
-      : hypothesis.pageType === "cart" ? "/cart"
-      : "/";
-    const pageHtml = await fetchStorefrontHtml(hypothesis.shop.shopifyDomain, targetPath);
+    // Reuse the page fetched up front for the inventory; only fetch again if that
+    // earlier fetch failed.
+    pageHtml = pageHtml ?? (await fetchStorefrontHtml(hypothesis.shop.shopifyDomain, targetPath));
 
     let render = validateVariantAgainstHtml({
       htmlPatch: patches.htmlPatch ?? null,
@@ -778,6 +826,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
           hypothesis.title, hypothesis.hypothesis, hypothesis.pageType,
           hypothesis.elementType, hypothesis.targetMetric,
           hypothesis.shop.brandGuardrails, hypothesis.shop.themeTokens,
+          pageInventory?.summary ?? null,
         ) +
         `\n\n## Render check FAILED — your previous variant produced NO visible change on the real page.\n` +
         `Reason: ${render.detail}\n` +
@@ -853,6 +902,7 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
                 hypothesis.title, hypothesis.hypothesis, hypothesis.pageType,
                 hypothesis.elementType, hypothesis.targetMetric,
                 hypothesis.shop.brandGuardrails, hypothesis.shop.themeTokens,
+                pageInventory?.summary ?? null,
               ) +
               `\n\nIMPORTANT: This is the SECOND variant of an A/B/n test. The FIRST ` +
               `variant is described as:\n"${variantDescription}"\nProduce a MEANINGFULLY ` +
