@@ -167,18 +167,49 @@ they read as AI-generated. Use a period, comma, or colon instead.
 Write metric names in plain English in the hypothesis prose (e.g. "add-to-cart rate", not
 "add_to_cart_rate").`;
 
+/**
+ * Format the hypotheses that proved non-viable or failed to build on THIS store
+ * into an avoid-list for the generator prompt. Without this, the generator keeps
+ * re-proposing the same dead ideas: its "already covered" filter only looks at
+ * backlog/building/promoted, so a failed or declined combo frees up immediately
+ * and reappears every run (e.g. a homepage add-to-cart test on a store whose
+ * homepage has no add-to-cart button). De-duplicated by pageType+elementType+title.
+ */
+export function formatNonViableTests(
+  rows: { pageType: string; elementType: string; title: string }[],
+): string {
+  if (rows.length === 0) return "None yet.";
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const r of rows) {
+    const key = `${r.pageType}/${r.elementType}/${r.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(`- ${r.pageType}/${r.elementType}: "${r.title}"`);
+  }
+  return lines.join("\n");
+}
+
 function buildHypothesisPrompt(
   reportMd: string,
   pastTests: string,
   avail: AvailableSegments,
   coveredCombos: string[],
   pageStructure: string,
+  nonViableTests: string,
 ): string {
   return `## Research Report
 ${reportMd}
 
 ## Past Tests (avoid repeating these exactly)
 ${pastTests || "None yet."}
+
+## Known non-viable on this store (do NOT propose these again, or close variants of them)
+These hypotheses already FAILED to build or were judged not viable on THIS store — usually
+because the element they target does not exist on that page type (e.g. an add-to-cart button
+on the homepage, a trust badge anchored to a checkout button that isn't there). Do NOT propose
+them again, and do NOT propose near-duplicates that target the same missing element:
+${nonViableTests}
 
 ## Real store structure (heuristic check — propose ONLY relevant, existing tests)
 Below is what ACTUALLY exists on this store's pages, scraped from the live theme.
@@ -269,12 +300,20 @@ async function generateHypotheses(
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
-  const [report, knowledgeBase] = await Promise.all([
+  const [report, knowledgeBase, nonViableHypotheses] = await Promise.all([
     prisma.researchReport.findUnique({ where: { id: reportId } }),
     prisma.knowledgeBase.findMany({
       where: { shopId },
       orderBy: { createdAt: "desc" },
       take: 10,
+    }),
+    // Hypotheses that failed to build / were judged not viable on this store, so
+    // the generator stops re-proposing the same dead ideas every cycle.
+    prisma.hypothesis.findMany({
+      where: { shopId, status: { in: ["not_viable", "qa_failed"] } },
+      orderBy: { createdAt: "desc" },
+      take: 25,
+      select: { pageType: true, elementType: true, title: true },
     }),
   ]);
   if (!report) throw new Error(`Report ${reportId} not found`);
@@ -282,9 +321,10 @@ async function generateHypotheses(
   const pastTests = knowledgeBase
     .map((e) => `- ${e.pageType}/${e.elementType}: "${e.hypothesisText}" → ${e.result}`)
     .join("\n");
+  const nonViableTests = formatNonViableTests(nonViableHypotheses);
 
   const platformInsights = await fetchPlatformInsights();
-  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests, avail, coveredCombos, pageStructure) +
+  const userPrompt = buildHypothesisPrompt(report.reportMd, pastTests, avail, coveredCombos, pageStructure, nonViableTests) +
     (platformInsights
       ? `\n\n${platformInsights}\n\nWhen scoring ICE, use these platform patterns to calibrate Confidence scores. High-performing patterns on the platform should get higher Confidence. Consistent losers should get lower Confidence even if they seem logical locally.`
       : "");
