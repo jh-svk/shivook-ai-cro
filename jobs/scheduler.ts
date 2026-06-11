@@ -41,13 +41,31 @@ async function handleOrchestratorTick() {
 
 // ── Registration ──────────────────────────────────────────────────────────────
 
+// The autonomous orchestrator (hypothesis -> autoBuild -> qaReview -> activation)
+// can be paused without a code change by setting AUTONOMOUS_PIPELINE_ENABLED=false.
+// Useful when the storefront has no measurable traffic (e.g. a password-protected
+// dev store), so the 6-hourly run isn't generating experiments that can never
+// collect data. Defaults to enabled.
+const AUTONOMOUS_PIPELINE_ENABLED =
+  process.env.AUTONOMOUS_PIPELINE_ENABLED !== "false";
+
 export async function registerSchedules() {
   const boss = await getBoss();
 
   // Register cron schedules (pg-boss is idempotent — safe to call on every startup)
   await boss.schedule("hourly-refresh", "0 * * * *", {});        // every hour
   await boss.schedule("nightly-sync", "0 0 * * *", {});          // midnight UTC
-  await boss.schedule("orchestrator-tick", "0 */6 * * *", {});   // every 6 hours
+
+  if (AUTONOMOUS_PIPELINE_ENABLED) {
+    await boss.schedule("orchestrator-tick", "0 */6 * * *", {}); // every 6 hours
+  } else {
+    // Actively remove any previously-registered schedule so the pause survives
+    // restarts/redeploys, not just the initial unschedule.
+    await boss.unschedule("orchestrator-tick").catch(() => {});
+    console.log(
+      "[scheduler] autonomous orchestrator DISABLED (AUTONOMOUS_PIPELINE_ENABLED=false) — orchestrator-tick not scheduled",
+    );
+  }
 
   // Register cron job handlers
   await boss.work("hourly-refresh", async () => {
