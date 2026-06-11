@@ -27,6 +27,26 @@ export interface VariantValidationResult {
   detail?: string;
 }
 
+/**
+ * True when a generated patch set is completely empty — no HTML, no CSS, no JS.
+ * This is the model *declining* the test: the generation prompt explicitly tells
+ * it to "return null patches instead of guessing" when no real selector exists or
+ * the page lacks the required element. A CSS-only patch is NOT empty (restyling an
+ * existing element is a valid change), matching `validateVariantAgainstHtml`.
+ *
+ * autoBuild uses this to short-circuit a decline early — marking the hypothesis
+ * not-viable instead of running a wasteful design-critique + render-retry and
+ * mislabelling it as a quality failure.
+ */
+export function isEmptyPatchSet(patches: {
+  htmlPatch: string | null;
+  cssPatch: string | null;
+  jsPatch: string | null;
+}): boolean {
+  const blank = (s: string | null | undefined) => !s || s.trim() === "";
+  return blank(patches.htmlPatch) && blank(patches.cssPatch) && blank(patches.jsPatch);
+}
+
 interface ValidatorInput {
   htmlPatch: string | null;
   cssPatch: string | null;
