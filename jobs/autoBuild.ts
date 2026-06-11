@@ -13,7 +13,7 @@ import prisma from "../app/db.server";
 import Anthropic from "@anthropic-ai/sdk";
 import { hasPlanFeature } from "../lib/planGate.server";
 import { fetchStorefrontHtml } from "../lib/themeTokenExtractor.server";
-import { validateVariantAgainstHtml } from "../lib/variantValidator.server";
+import { validateVariantAgainstHtml, isEmptyPatchSet } from "../lib/variantValidator.server";
 import { extractPageInventory, pageLacksRequiredElement } from "../lib/pageInventory.server";
 
 interface ThemeTokensShape {
@@ -663,6 +663,26 @@ export async function runAutoBuild(shopId: string, hypothesisId: string) {
 
   // Recover the common case of Claude embedding JS as an inline <script>.
   extractInlineScripts(patches);
+
+  // The model returns an all-empty patch set when it DECLINES a non-viable test —
+  // the prompt explicitly tells it to "return null patches instead of guessing"
+  // when no real selector exists or the page lacks the target element. That's not
+  // a quality failure: treat it as not-viable, skip the wasteful design-critique +
+  // render-retry (2 model calls), and keep it out of the merchant's "Build failed"
+  // list. Distinct `skipped`/`declined_not_viable` log so failure stats stay honest.
+  if (isEmptyPatchSet(patches)) {
+    await prisma.hypothesis.update({
+      where: { id: hypothesisId },
+      data: { status: "not_viable" },
+    });
+    await logOrchestrator(shopId, runId, "BUILD", "skipped", {
+      hypothesisId,
+      reason: "declined_not_viable",
+      detail: patches.variantDescription?.slice(0, 300) ?? null,
+    });
+    console.log(`[autoBuild] model declined ${hypothesisId} (empty patch set) — marked not_viable`);
+    return;
+  }
 
   const qa = qaGate(patches.htmlPatch ?? null, patches.jsPatch ?? null);
   if (!qa.passed) {

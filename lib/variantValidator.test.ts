@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateVariantAgainstHtml, detectHiddenTarget } from "./variantValidator.server";
+import { validateVariantAgainstHtml, detectHiddenTarget, isEmptyPatchSet } from "./variantValidator.server";
 
 const PRODUCT_HTML = `<!doctype html><html><body>
   <main>
@@ -96,5 +96,27 @@ describe("detectHiddenTarget (hover-only Quick Add no-op)", () => {
 
   it("does NOT flag Quick-Add targeting on a product page (out of scope)", () => {
     expect(detectHiddenTarget({ jsPatch: wastedJs, htmlPatch: null, pageType: "product", deviceType: "mobile" })).toBeNull();
+  });
+});
+
+describe("isEmptyPatchSet", () => {
+  it("is true when all three patches are null (the model declined)", () => {
+    expect(isEmptyPatchSet({ htmlPatch: null, cssPatch: null, jsPatch: null })).toBe(true);
+  });
+
+  it("is true when all three patches are empty or whitespace-only strings", () => {
+    expect(isEmptyPatchSet({ htmlPatch: "", cssPatch: "   ", jsPatch: "\n\t" })).toBe(true);
+  });
+
+  it("is false for a CSS-only restyle (a valid variant we must not skip)", () => {
+    expect(isEmptyPatchSet({ htmlPatch: null, cssPatch: ".price{color:red}", jsPatch: null })).toBe(false);
+  });
+
+  it("is false when only the HTML patch is present", () => {
+    expect(isEmptyPatchSet({ htmlPatch: "<div>x</div>", cssPatch: null, jsPatch: null })).toBe(false);
+  });
+
+  it("is false when only the JS patch is present", () => {
+    expect(isEmptyPatchSet({ htmlPatch: null, cssPatch: null, jsPatch: "document.title='x'" })).toBe(false);
   });
 });
